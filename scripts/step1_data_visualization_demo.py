@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from configs.config import Config
-from scripts.visualize_data import MultiModalVisualizer
+from scripts.step1_data_visualization_comprehensive import MultiModalVisualizer
 
 
 def demo_visualization():
