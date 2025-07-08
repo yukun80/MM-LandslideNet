@@ -13,23 +13,14 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-# Add parent directory to path to import modules
-import sys
+# Import optical baseline modules
+from optical_src.config import OpticalBaselineConfig
+from optical_src.dataset import LandslideDataset
+from optical_src.model import BaselineOpticalModel
+from optical_src.utils import setup_logging, set_seed, get_device, format_time, ensure_dir
 
-sys.path.append(str(Path(__file__).parent.parent))
-from configs.config import Config
-
-# Import our custom modules
-from dataset import LandslideDataset
-from model import BaselineOpticalModel
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("training.log"), logging.StreamHandler()],
-)
-logger = logging.getLogger(__name__)
+# Setup logger for this module
+logger = logging.getLogger("optical_baseline.train")
 
 
 class Trainer:
@@ -37,22 +28,24 @@ class Trainer:
     Comprehensive trainer class for the optical baseline model.
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[OpticalBaselineConfig] = None):
         """
         Initialize the trainer with configuration.
 
         Args:
-            config: Configuration object (uses Config() if None)
+            config: OpticalBaselineConfig object (uses OpticalBaselineConfig() if None)
         """
         # Load configuration
-        self.config = config if config is not None else Config()
+        self.config = config if config is not None else OpticalBaselineConfig()
+
+        # Set random seed for reproducibility
+        set_seed(self.config.SEED)
 
         # Ensure directories exist
         self.config.create_dirs()
 
         # Set device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {self.device}")
+        self.device = get_device()
 
         # Initialize components
         self._load_data()
@@ -96,19 +89,11 @@ class Trainer:
         logger.info("Initializing model...")
 
         try:
-            self.model = BaselineOpticalModel(
-                model_name="swin_tiny_patch4_window7_224",
-                num_classes=self.config.NUM_CLASSES,
-                pretrained=True,
-                dropout_rate=0.2,
-            )
-
+            # Create model from configuration
+            self.model = BaselineOpticalModel.from_config(self.config, variant="swin_tiny")
             self.model = self.model.to(self.device)
 
-            # Print model info
-            total_params = sum(p.numel() for p in self.model.parameters())
-            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            logger.info(f"Model parameters: {total_params:,} total, " f"{trainable_params:,} trainable")
+            logger.info("Model initialization completed successfully")
 
         except Exception as e:
             logger.error(f"Error initializing model: {str(e)}")
@@ -120,9 +105,13 @@ class Trainer:
 
         try:
             # Loss function with class weighting for imbalance
-            pos_weight = self._calculate_pos_weight()
-            self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-            logger.info(f"Using BCEWithLogitsLoss with pos_weight: {pos_weight.item():.3f}")
+            if self.config.USE_CLASS_WEIGHTING:
+                pos_weight = self._calculate_pos_weight()
+                self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+                logger.info(f"Using BCEWithLogitsLoss with pos_weight: {pos_weight.item():.3f}")
+            else:
+                self.criterion = nn.BCEWithLogitsLoss()
+                logger.info("Using BCEWithLogitsLoss without class weighting")
 
             # Optimizer
             self.optimizer = optim.AdamW(
@@ -130,10 +119,14 @@ class Trainer:
             )
 
             # Learning rate scheduler
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.config.SCHEDULER_T_MAX)
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=self.config.SCHEDULER_T_MAX, eta_min=self.config.SCHEDULER_ETA_MIN
+            )
 
-            logger.info(f"Optimizer: AdamW (lr={self.config.LEARNING_RATE}, " f"wd={self.config.WEIGHT_DECAY})")
-            logger.info(f"Scheduler: CosineAnnealingLR (T_max={self.config.SCHEDULER_T_MAX})")
+            logger.info(f"Optimizer: AdamW (lr={self.config.LEARNING_RATE}, wd={self.config.WEIGHT_DECAY})")
+            logger.info(
+                f"Scheduler: CosineAnnealingLR (T_max={self.config.SCHEDULER_T_MAX}, eta_min={self.config.SCHEDULER_ETA_MIN})"
+            )
 
         except Exception as e:
             logger.error(f"Error setting up training components: {str(e)}")
@@ -154,7 +147,9 @@ class Trainer:
 
     def _setup_logging(self) -> None:
         """Setup TensorBoard logging."""
-        log_dir = self.config.LOG_DIR / f"optical_baseline_{int(time.time())}"
+        log_dir = self.config.OPTICAL_LOG_DIR / f"run_{int(time.time())}"
+        ensure_dir(log_dir)
+
         self.writer = SummaryWriter(log_dir=log_dir)
         logger.info(f"TensorBoard logging to: {log_dir}")
 
@@ -194,7 +189,7 @@ class Trainer:
             all_labels.extend(labels.cpu().numpy())
 
             # Log progress
-            if batch_idx % 50 == 0:
+            if batch_idx % self.config.LOG_FREQUENCY == 0:
                 logger.info(
                     f"Epoch {self.current_epoch}, "
                     f"Batch {batch_idx}/{len(self.train_loader)}, "
@@ -263,11 +258,30 @@ class Trainer:
             Dictionary of metrics
         """
         try:
+            # Calculate basic metrics with safe handling of edge cases
+            accuracy = accuracy_score(labels, predictions)
+
+            # For precision, recall, and f1, handle edge cases manually
+            try:
+                precision = precision_score(labels, predictions)
+            except (ValueError, ZeroDivisionError):
+                precision = 0.0
+
+            try:
+                recall = recall_score(labels, predictions)
+            except (ValueError, ZeroDivisionError):
+                recall = 0.0
+
+            try:
+                f1 = f1_score(labels, predictions)
+            except (ValueError, ZeroDivisionError):
+                f1 = 0.0
+
             metrics = {
-                "accuracy": accuracy_score(labels, predictions),
-                "precision": precision_score(labels, predictions, zero_division="0"),
-                "recall": recall_score(labels, predictions, zero_division="0"),
-                "f1_score": f1_score(labels, predictions, zero_division="0"),
+                "accuracy": accuracy,
+                "precision": precision,
+                "recall": recall,
+                "f1_score": f1,
             }
 
             # Add AUC if probabilities provided
@@ -321,13 +335,16 @@ class Trainer:
             "config": self.config.__dict__,
         }
 
+        # Ensure checkpoint directory exists
+        ensure_dir(self.config.OPTICAL_CHECKPOINT_DIR)
+
         # Save regular checkpoint
-        checkpoint_path = self.config.CHECKPOINT_DIR / f"optical_baseline_epoch_{self.current_epoch}.pth"
+        checkpoint_path = self.config.OPTICAL_CHECKPOINT_DIR / f"epoch_{self.current_epoch}.pth"
         torch.save(checkpoint, checkpoint_path)
 
         # Save best checkpoint
         if is_best:
-            best_path = self.config.CHECKPOINT_DIR / "optical_baseline_best.pth"
+            best_path = self.config.OPTICAL_CHECKPOINT_DIR / "best_model.pth"
             torch.save(checkpoint, best_path)
             logger.info(f"New best model saved with F1: {val_metrics['f1_score']:.4f}")
 
@@ -385,10 +402,10 @@ class Trainer:
                     break
 
                 epoch_time = time.time() - epoch_start_time
-                logger.info(f"Epoch {epoch} completed in {epoch_time:.2f}s")
+                logger.info(f"Epoch {epoch} completed in {format_time(epoch_time)}")
 
             total_time = time.time() - start_time
-            logger.info(f"Training completed in {total_time:.2f}s")
+            logger.info(f"Training completed in {format_time(total_time)}")
             logger.info(f"Best validation F1: {self.best_f1:.4f} at epoch {self.best_epoch}")
 
         except KeyboardInterrupt:
@@ -402,10 +419,15 @@ class Trainer:
 
 def main() -> None:
     """Main function to run training."""
-    logger.info("Starting MM-LandslideNet Optical Baseline Training")
-
     # Load configuration
-    config = Config()
+    config = OpticalBaselineConfig()
+
+    # Setup logging
+    log_file = config.OPTICAL_LOG_DIR / "training.log"
+    setup_logging(log_level="INFO", log_file=log_file)
+
+    logger.info("Starting MM-LandslideNet Optical Baseline Training")
+    logger.info(f"Configuration: {config}")
 
     # Create and run trainer
     trainer = Trainer(config)

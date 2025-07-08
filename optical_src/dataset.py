@@ -11,15 +11,12 @@ from pathlib import Path
 import logging
 from typing import Optional, Dict, Tuple, Any, Union
 
-# Add parent directory to path to import config
-import sys
+# Import optical baseline config and utils
+from optical_src.config import OpticalBaselineConfig
+from optical_src.utils import setup_logging
 
-sys.path.append(str(Path(__file__).parent.parent))
-from configs.config import Config
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup logger for this module
+logger = logging.getLogger("optical_baseline.dataset")
 
 
 class LandslideDataset(Dataset):
@@ -161,16 +158,19 @@ class LandslideDataset(Dataset):
         return normalized_data
 
     @staticmethod
-    def get_transforms(is_training: bool = True) -> A.Compose:
+    def get_transforms(is_training: bool = True, config: Optional[OpticalBaselineConfig] = None) -> A.Compose:
         """
         Get albumentations transforms for training or validation.
         """
+        if config is None:
+            config = OpticalBaselineConfig()
+
         if is_training:
             return A.Compose(
                 [
-                    A.HorizontalFlip(p=0.5),
-                    A.VerticalFlip(p=0.5),
-                    A.RandomRotate90(p=0.5),
+                    A.HorizontalFlip(p=config.HORIZONTAL_FLIP_PROB),
+                    A.VerticalFlip(p=config.VERTICAL_FLIP_PROB),
+                    A.RandomRotate90(p=config.ROTATION_PROB),
                     ToTensorV2(),  # Converts to tensor and changes HWC to CHW
                 ]
             )
@@ -179,7 +179,7 @@ class LandslideDataset(Dataset):
 
     @staticmethod
     def get_train_val_dataloaders(
-        config: Optional[Config] = None,
+        config: Optional[OpticalBaselineConfig] = None,
     ) -> Tuple[DataLoader, DataLoader, "LandslideDataset", "LandslideDataset"]:
         """
         Create training and validation dataloaders with proper configuration.
@@ -188,7 +188,7 @@ class LandslideDataset(Dataset):
             tuple: (train_loader, val_loader, train_dataset, val_dataset)
         """
         if config is None:
-            config = Config()
+            config = OpticalBaselineConfig()
 
         # Load exclude_ids
         exclude_ids_path = config.PROJECT_ROOT / "dataset" / "data_check" / "exclude_ids.json"
@@ -236,8 +236,8 @@ class LandslideDataset(Dataset):
         val_df.to_csv(val_csv_path, index=False)  # type: ignore
 
         # Create datasets
-        train_transforms = LandslideDataset.get_transforms(is_training=True)
-        val_transforms = LandslideDataset.get_transforms(is_training=False)
+        train_transforms = LandslideDataset.get_transforms(is_training=True, config=config)
+        val_transforms = LandslideDataset.get_transforms(is_training=False, config=config)
 
         train_dataset = LandslideDataset(
             csv_file=train_csv_path,
@@ -294,7 +294,7 @@ class LandslideDataset(Dataset):
 
 if __name__ == "__main__":
     # Test the dataset
-    config = Config()
+    config = OpticalBaselineConfig()
     train_loader, val_loader, train_dataset, val_dataset = LandslideDataset.get_train_val_dataloaders(config)
 
     # Test loading a batch

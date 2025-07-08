@@ -6,15 +6,12 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Add parent directory to path to import config
-import sys
+# Import optical baseline config and utils
+from optical_src.config import OpticalBaselineConfig
+from optical_src.utils import setup_logging, count_parameters, get_model_size
 
-sys.path.append(str(Path(__file__).parent.parent))
-from configs.config import Config
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup logger for this module
+logger = logging.getLogger("optical_baseline.model")
 
 
 class BaselineOpticalModel(nn.Module):
@@ -67,6 +64,27 @@ class BaselineOpticalModel(nn.Module):
 
         logger.info(f"Created {model_name} with {num_classes} output classes")
         self._print_model_info()
+
+    @classmethod
+    def from_config(cls, config: OpticalBaselineConfig, variant: str = "swin_tiny") -> "BaselineOpticalModel":
+        """
+        Create model from configuration.
+
+        Args:
+            config: OpticalBaselineConfig instance
+            variant: Model variant to use
+
+        Returns:
+            BaselineOpticalModel instance
+        """
+        model_config = config.get_model_config(variant)
+
+        return cls(
+            model_name=model_config["model_name"],
+            num_classes=model_config["num_classes"],
+            pretrained=model_config["pretrained"],
+            dropout_rate=model_config["dropout_rate"],
+        )
 
     def _modify_input_layer(self) -> None:
         """
@@ -152,12 +170,13 @@ class BaselineOpticalModel(nn.Module):
 
     def _print_model_info(self) -> None:
         """Print model architecture information."""
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params, trainable_params = count_parameters(self)
+        model_size = get_model_size(self)
 
         logger.info(f"Model Architecture: {self.model_name}")
         logger.info(f"Total parameters: {total_params:,}")
         logger.info(f"Trainable parameters: {trainable_params:,}")
+        logger.info(f"Model size: {model_size:.2f} MB")
         logger.info(f"Feature dimension: {self.feature_dim}")
         logger.info(f"Classification head: {self.classifier}")
 
@@ -166,43 +185,54 @@ class ModelFactory:
     """Factory class for creating different model variants."""
 
     @staticmethod
-    def create_model(model_type: str = "swin_tiny", **kwargs) -> BaselineOpticalModel:
+    def create_model(
+        model_type: str = "swin_tiny", config: Optional[OpticalBaselineConfig] = None, **kwargs
+    ) -> BaselineOpticalModel:
         """
         Create a model based on the specified type.
 
         Args:
             model_type: Type of model to create
+            config: OpticalBaselineConfig instance (creates default if None)
             **kwargs: Additional arguments for model creation
 
         Returns:
             BaselineOpticalModel instance
         """
-        model_configs = {
-            "swin_tiny": {"model_name": "swin_tiny_patch4_window7_224", "pretrained": True},
-            "swin_small": {"model_name": "swin_small_patch4_window7_224", "pretrained": True},
-            "swin_base": {"model_name": "swin_base_patch4_window7_224", "pretrained": True},
-        }
+        if config is None:
+            config = OpticalBaselineConfig()
 
-        if model_type not in model_configs:
-            raise ValueError(f"Unknown model type: {model_type}. " f"Available types: {list(model_configs.keys())}")
+        if model_type not in config.MODEL_VARIANTS:
+            raise ValueError(
+                f"Unknown model type: {model_type}. " f"Available types: {list(config.MODEL_VARIANTS.keys())}"
+            )
 
-        config = model_configs[model_type]
-        config.update(kwargs)  # Override with any provided kwargs
+        # Get model configuration and override with kwargs
+        model_config = config.get_model_config(model_type)
+        model_config.update(kwargs)  # Override with any provided kwargs
 
-        return BaselineOpticalModel(**config)
+        return BaselineOpticalModel(
+            model_name=model_config["model_name"],
+            num_classes=model_config["num_classes"],
+            pretrained=model_config["pretrained"],
+            dropout_rate=model_config["dropout_rate"],
+        )
 
 
 def test_model() -> BaselineOpticalModel:
     """Test the model with dummy data."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from .utils import get_device
 
-    # Create model
-    model = BaselineOpticalModel()
+    device = get_device()
+
+    # Create model using configuration
+    config = OpticalBaselineConfig()
+    model = BaselineOpticalModel.from_config(config)
     model = model.to(device)
     model.eval()
 
     # Create dummy input (batch_size=2, channels=5, height=64, width=64)
-    dummy_input = torch.randn(2, 5, 64, 64).to(device)
+    dummy_input = torch.randn(2, config.INPUT_CHANNELS, config.IMAGE_SIZE, config.IMAGE_SIZE).to(device)
 
     # Test forward pass
     with torch.no_grad():
@@ -218,15 +248,19 @@ def test_model() -> BaselineOpticalModel:
 
 
 if __name__ == "__main__":
+    # Setup logging
+    setup_logging(log_level="INFO")
+
     # Test the model
     model = test_model()
     print("\nModel test completed successfully!")
 
     # Test different model variants
     print("\nTesting different model variants:")
+    config = OpticalBaselineConfig()
     for model_type in ["swin_tiny", "swin_small"]:
         try:
-            model = ModelFactory.create_model(model_type)
+            model = ModelFactory.create_model(model_type, config=config)
             print(f"✓ {model_type}: Created successfully")
         except Exception as e:
             print(f"✗ {model_type}: Failed - {str(e)}")
