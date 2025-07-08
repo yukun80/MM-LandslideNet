@@ -5,12 +5,14 @@
 `optical_src` 包实现了滑坡检测任务的**光学数据基线模型**，这是整个竞赛策略中的**第二阶段**核心组件。
 
 ### 🎯 核心目标
+
 - **专注光学数据**：仅使用Sentinel-2光学遥感数据进行滑坡检测
 - **基准模型**：为后续复杂的多模态模型提供性能基准
 - **算法验证**：验证光学数据在滑坡检测任务中的有效性
 - **技术铺垫**：为Phase 3多模态融合奠定技术基础
 
 ### 🏗️ 架构定位
+
 ```
 Phase 1: 数据质量分析与预处理
     ↓
@@ -35,11 +37,13 @@ Phase 4: 模型集成与优化
 ```
 
 #### **主干网络**: Swin Transformer
+
 - **模型选择**: `swin_tiny_patch4_window7_224`
 - **特征维度**: 768维全局特征表示
 - **预训练权重**: ImageNet预训练，提供强大的视觉特征提取能力
 
 #### **输入层改造策略**
+
 ```python
 原始: 3通道 (RGB) → 修改后: 5通道 (R,G,B,NIR,NDVI)
 
@@ -50,6 +54,7 @@ Phase 4: 模型集成与优化
 ```
 
 #### **分类头设计**
+
 ```python
 nn.Sequential(
     nn.LayerNorm(768),     # 特征归一化
@@ -62,15 +67,16 @@ nn.Sequential(
 
 #### **5通道输入张量** `(Batch, 5, 64, 64)`
 
-| 通道 | 数据源 | 描述 | 波段范围 |
-|------|--------|------|----------|
-| **R** | Sentinel-2 | 红光波段 | 650-680 nm |
-| **G** | Sentinel-2 | 绿光波段 | 540-570 nm |
-| **B** | Sentinel-2 | 蓝光波段 | 450-490 nm |
-| **NIR** | Sentinel-2 | 近红外波段 | 780-900 nm |
-| **NDVI** | 计算得出 | 归一化植被指数 | (NIR-R)/(NIR+R) |
+| 通道           | 数据源     | 描述           | 波段范围        |
+| -------------- | ---------- | -------------- | --------------- |
+| **R**    | Sentinel-2 | 红光波段       | 650-680 nm      |
+| **G**    | Sentinel-2 | 绿光波段       | 540-570 nm      |
+| **B**    | Sentinel-2 | 蓝光波段       | 450-490 nm      |
+| **NIR**  | Sentinel-2 | 近红外波段     | 780-900 nm      |
+| **NDVI** | 计算得出   | 归一化植被指数 | (NIR-R)/(NIR+R) |
 
 #### **NDVI计算公式**
+
 ```python
 NDVI = (NIR - Red) / (NIR + Red + ε)
 其中 ε = 1e-8 (避免除零错误)
@@ -83,11 +89,13 @@ NDVI = (NIR - Red) / (NIR + Red + ε)
 ### 📁 数据加载流程
 
 #### **原始数据格式**
+
 - **文件类型**: `.npy` 文件
 - **数据维度**: `(64, 64, 12)` - 12通道遥感数据
 - **存储路径**: `dataset/train_data/` 和 `dataset/test_data/`
 
 #### **通道提取与处理**
+
 ```python
 # 从12通道数据中提取光学通道
 原始数据 (64×64×12) → 光学数据 (64×64×4) → 5通道输入 (64×64×5)
@@ -97,29 +105,33 @@ NDVI = (NIR - Red) / (NIR + Red + ε)
 ### 🧹 数据质量控制
 
 #### **低质量图像过滤**
+
 - **数据源**: `dataset/data_check/exclude_ids.json`
 - **来源**: Phase 1数据质量分析阶段识别
-- **过滤标准**: 
+- **过滤标准**:
   - 云覆盖过多
   - 数据缺失严重
   - 噪声水平过高
-- **影响**: 从6,432个样本过滤至5,145个高质量训练样本
+- **影响**: 从6,432个样本过滤后的样本
 
-#### **过滤统计**
+#### **数据划分**
+
 ```
-原始训练样本: 6,432个
-低质量样本: 1,287个 (20.0%)
+过滤后可用训练样本: 6,432个
+验证样本: 1,287个 (20.0%)
 可用训练样本: 5,145个 (80.0%)
 ```
 
 ### 📏 数据归一化
 
 #### **通道级归一化**
+
 - **统计文件**: `dataset/data_check/channel_stats.json`
 - **归一化方法**: Z-score标准化
 - **公式**: `(pixel - mean) / (std + ε)`
 
 #### **各通道统计参数**
+
 ```python
 光学通道 (R,G,B,NIR):
 - 使用预计算的均值和标准差
@@ -133,6 +145,7 @@ NDVI通道:
 ### 🔄 数据增强策略
 
 #### **几何变换技术**
+
 ```python
 训练时增强:
 - 水平翻转: 50% 概率
@@ -144,6 +157,7 @@ NDVI通道:
 ```
 
 #### **增强实现**
+
 ```python
 # 使用Albumentations库
 A.Compose([
@@ -157,6 +171,7 @@ A.Compose([
 ### 📊 数据集划分
 
 #### **分层划分策略**
+
 ```python
 训练集: 80% (4,116个样本)
 验证集: 20% (1,029个样本)
@@ -166,6 +181,7 @@ A.Compose([
 ```
 
 #### **类别分布维护**
+
 - 保持训练集和验证集中的正负样本比例一致
 - 避免验证偏差
 - 确保评估结果的可靠性
@@ -173,6 +189,7 @@ A.Compose([
 ### ⚖️ 类别不平衡处理
 
 #### **加权随机采样器**
+
 ```python
 # 计算类别权重
 class_weights = 1.0 / class_counts
@@ -187,6 +204,7 @@ WeightedRandomSampler(
 ```
 
 #### **不平衡统计**
+
 ```
 负样本 (非滑坡): ~90%
 正样本 (滑坡): ~10%
@@ -200,6 +218,7 @@ WeightedRandomSampler(
 ### 💥 损失函数
 
 #### **BCEWithLogitsLoss + 正样本权重**
+
 ```python
 # 自动计算正样本权重
 pos_weight = neg_count / pos_count  # ≈ 9.0
@@ -209,6 +228,7 @@ criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 ```
 
 #### **优势特点**
+
 - **数值稳定**: 内置sigmoid避免数值溢出
 - **类别平衡**: pos_weight自动调节正负样本重要性
 - **梯度优化**: 更好的梯度反向传播特性
@@ -216,6 +236,7 @@ criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 ### 🚀 优化器配置
 
 #### **AdamW优化器**
+
 ```python
 optimizer = optim.AdamW(
     model.parameters(),
@@ -225,6 +246,7 @@ optimizer = optim.AdamW(
 ```
 
 #### **参数说明**
+
 - **自适应学习率**: Adam算法的改进版本
 - **权重衰减**: 有效防止过拟合
 - **动量机制**: 加速收敛过程
@@ -232,6 +254,7 @@ optimizer = optim.AdamW(
 ### 📈 学习率调度
 
 #### **余弦退火调度器**
+
 ```python
 scheduler = optim.lr_scheduler.CosineAnnealingLR(
     optimizer,
@@ -241,6 +264,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(
 ```
 
 #### **调度特点**
+
 - **平滑衰减**: 避免学习率突变
 - **周期性**: 有助于跳出局部最优
 - **最终收敛**: 确保训练后期稳定
@@ -248,6 +272,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(
 ### ⏹️ 早停机制
 
 #### **监控指标与触发条件**
+
 ```python
 监控指标: 验证集F1-score
 耐心期: 10个epoch
@@ -257,6 +282,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(
 ```
 
 #### **早停优势**
+
 - **防止过拟合**: 在最佳性能点停止训练
 - **节省资源**: 避免无效的长时间训练
 - **模型选择**: 自动保存最佳性能模型
@@ -264,6 +290,7 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(
 ### 🔁 可重现性保证
 
 #### **随机种子设置**
+
 ```python
 # 设置所有随机数生成器种子
 random.seed(42)
@@ -279,6 +306,7 @@ torch.backends.cudnn.benchmark = False
 ### ⚡ 混合精度训练
 
 #### **自动混合精度 (AMP)**
+
 ```python
 # 配置启用
 MIXED_PRECISION = True
@@ -292,6 +320,7 @@ MIXED_PRECISION = True
 ### 📊 日志与监控
 
 #### **多层次日志系统**
+
 ```python
 1. 控制台输出: 实时训练进度
 2. 文件日志: logs/optical_baseline/training.log
@@ -299,11 +328,13 @@ MIXED_PRECISION = True
 ```
 
 #### **监控指标**
+
 - **训练指标**: Loss, Accuracy, F1-score, Precision, Recall
 - **验证指标**: 同训练指标 + AUC
 - **系统指标**: 学习率变化, 训练时间, GPU使用率
 
 #### **TensorBoard可视化**
+
 ```bash
 # 启动TensorBoard
 tensorboard --logdir=logs/optical_baseline
@@ -319,6 +350,7 @@ http://localhost:6006
 ### 🏗️ 模块化配置架构
 
 #### **继承结构**
+
 ```python
 configs/config.py (基础配置)
         ↓ 继承
@@ -326,6 +358,7 @@ optical_src/config.py (光学基线专用配置)
 ```
 
 #### **配置特点**
+
 - **参数隔离**: 光学基线专用参数独立管理
 - **重写机制**: 可覆盖基础配置中的通用参数
 - **扩展性**: 易于添加新的光学模型变体
@@ -333,6 +366,7 @@ optical_src/config.py (光学基线专用配置)
 ### 📋 关键配置参数
 
 #### **模型配置**
+
 ```python
 MODEL_NAME = "swin_tiny_patch4_window7_224"
 NUM_CLASSES = 1                    # 二元分类
@@ -342,6 +376,7 @@ TARGET_SIZE = 224                  # Swin Transformer输入尺寸
 ```
 
 #### **训练配置**
+
 ```python
 NUM_EPOCHS = 50                    # 最大训练轮数
 BATCH_SIZE = 32                    # 批次大小
@@ -350,6 +385,7 @@ WEIGHT_DECAY = 1e-4                # 权重衰减
 ```
 
 #### **数据配置**
+
 ```python
 HORIZONTAL_FLIP_PROB = 0.5         # 水平翻转概率
 VERTICAL_FLIP_PROB = 0.5           # 垂直翻转概率
@@ -357,6 +393,7 @@ ROTATION_PROB = 0.5                # 旋转概率
 ```
 
 #### **早停配置**
+
 ```python
 EARLY_STOPPING = True              # 启用早停
 PATIENCE = 10                      # 耐心期
@@ -366,6 +403,7 @@ MIN_DELTA = 1e-4                   # 最小改进阈值
 ### 🎛️ 模型变体支持
 
 #### **预定义变体**
+
 ```python
 MODEL_VARIANTS = {
     "swin_tiny": {
@@ -393,64 +431,39 @@ MODEL_VARIANTS = {
 ### 📋 前置条件
 
 #### **Phase 1 完成确认**
+
 确保以下文件存在且完整：
+
 - ✅ `dataset/data_check/exclude_ids.json` - 低质量图像列表
 - ✅ `dataset/data_check/channel_stats.json` - 通道统计信息
 - ✅ `dataset/Train.csv` - 训练标签文件
 - ✅ `dataset/train_data/*.npy` - 训练图像数据
 
-#### **Python环境依赖**
-```bash
-# 核心深度学习库
-torch>=1.12.0                     # PyTorch框架
-torchvision>=0.13.0               # 视觉工具
-timm>=0.6.12                      # 预训练模型库
-
-# 数据处理库  
-numpy>=1.21.0                     # 数值计算
-pandas>=1.4.0                     # 数据处理
-scikit-learn>=1.1.0               # 机器学习工具
-
-# 数据增强与可视化
-albumentations>=1.2.0             # 数据增强
-tensorboard>=2.8.0                # 训练监控
-matplotlib>=3.5.0                 # 绘图库
-```
-
-#### **硬件要求**
-```
-推荐配置:
-- GPU: NVIDIA RTX 3080 (8GB+) 或更高
-- 内存: 16GB+
-- 存储: 50GB+ 可用空间
-
-最低配置:
-- GPU: NVIDIA GTX 1060 (6GB+)
-- 内存: 8GB+
-- 存储: 20GB+ 可用空间
-```
-
 ### 💻 执行命令
 
 #### **方式1: 启动脚本 (推荐)**
+
 ```bash
 # 从项目根目录执行
 python run_optical_training.py
 ```
 
 #### **方式2: 模块运行**
+
 ```bash
 # 使用Python模块方式
 python -m optical_src.train
 ```
 
 #### **方式3: 直接运行**
+
 ```bash
 # 直接运行训练文件
 python optical_src/train.py
 ```
 
 #### **后台运行 (Linux/macOS)**
+
 ```bash
 # 后台运行并保存日志
 nohup python run_optical_training.py > training.log 2>&1 &
@@ -462,6 +475,7 @@ tail -f training.log
 ### 📈 预期输出
 
 #### **启动阶段** (前30秒)
+
 ```
 ============================================================
 MM-LandslideNet Optical Baseline Training Launcher
@@ -480,6 +494,7 @@ Starting training...
 ```
 
 #### **训练过程** (每个epoch)
+
 ```
 2024-XX-XX XX:XX:XX - optical_baseline.train - INFO - Starting training...
 2024-XX-XX XX:XX:XX - optical_baseline.train - INFO - Training for 50 epochs
@@ -498,7 +513,9 @@ Epoch 0 Results:
 ```
 
 #### **目录结构生成**
+
 训练过程中将自动创建以下目录结构：
+
 ```
 MM-LandslideNet/
 ├── logs/optical_baseline/
@@ -515,6 +532,7 @@ MM-LandslideNet/
 ```
 
 #### **训练完成输出**
+
 ```
 2024-XX-XX XX:XX:XX - optical_baseline.train - INFO - Training completed in 1h 23m 45.6s
 2024-XX-XX XX:XX:XX - optical_baseline.train - INFO - Best validation F1: 0.7234 at epoch 28
@@ -529,6 +547,7 @@ MM-LandslideNet/
 ### 🔍 结果检查
 
 #### **性能指标文件**
+
 ```bash
 # 检查TensorBoard日志
 tensorboard --logdir=logs/optical_baseline
@@ -541,6 +560,7 @@ ls -la outputs/checkpoints/optical_baseline/
 ```
 
 #### **预期性能范围**
+
 ```
 基线性能目标:
 - 验证准确率: 85%+
@@ -558,6 +578,7 @@ ls -la outputs/checkpoints/optical_baseline/
 ## 📝 使用示例
 
 ### 🔧 自定义配置训练
+
 ```python
 from optical_src.config import OpticalBaselineConfig
 from optical_src.train import Trainer
@@ -574,6 +595,7 @@ trainer.train()
 ```
 
 ### 🎯 模型推理示例
+
 ```python
 from optical_src.model import BaselineOpticalModel
 from optical_src.config import OpticalBaselineConfig
@@ -602,25 +624,27 @@ with torch.no_grad():
 
 ### 📊 基线性能目标
 
-| 指标 | 目标值 | 优秀值 |
-|------|--------|--------|
-| **验证准确率** | ≥85% | ≥90% |
+| 指标                 | 目标值 | 优秀值 |
+| -------------------- | ------ | ------ |
+| **验证准确率** | ≥85%  | ≥90%  |
 | **验证F1分数** | ≥0.60 | ≥0.70 |
-| **验证AUC** | ≥0.80 | ≥0.85 |
-| **训练时间** | <2小时 | <1小时 |
+| **验证AUC**    | ≥0.80 | ≥0.85 |
+| **训练时间**   | <2小时 | <1小时 |
 
 ### 🚀 优化建议
 
 #### **进一步提升性能**
+
 1. **模型升级**: 尝试 `swin_small` 或 `swin_base` 变体
 2. **数据增强**: 添加颜色变换、噪声注入等技术
 3. **损失函数**: 尝试Focal Loss或其他不平衡处理方法
 4. **集成学习**: 训练多个模型进行投票预测
 
 #### **训练加速**
+
 1. **混合精度**: 确保启用AMP
 2. **批次大小**: 根据GPU内存适当增大
-3. **数据加载**: 增加`num_workers`并行度
+3. **数据加载**: 增加 `num_workers`并行度
 4. **模型选择**: 使用更小的Swin变体进行快速实验
 
 ---
@@ -630,6 +654,7 @@ with torch.no_grad():
 ### ❓ 常见问题
 
 #### **Q1: 训练过程中GPU内存不足怎么办？**
+
 ```python
 # 解决方案
 1. 减小批次大小: config.BATCH_SIZE = 16
@@ -638,6 +663,7 @@ with torch.no_grad():
 ```
 
 #### **Q2: 训练收敛速度太慢？**
+
 ```python
 # 解决方案  
 1. 增大学习率: config.LEARNING_RATE = 2e-4
@@ -646,6 +672,7 @@ with torch.no_grad():
 ```
 
 #### **Q3: 验证性能不理想？**
+
 ```python
 # 分析方法
 1. 检查数据质量: 重新审视exclude_ids.json
@@ -654,10 +681,11 @@ with torch.no_grad():
 ```
 
 ### 📧 联系方式
+
 - **项目文档**: 参考项目根目录README.md
 - **代码问题**: 检查各模块的docstring说明
 - **性能调优**: 参考configs/config.py基础配置
 
 ---
 
-**🎉 祝您训练顺利！期待光学基线模型为后续多模态融合提供强有力的性能基准！** 
+**🎉 祝您训练顺利！期待光学基线模型为后续多模态融合提供强有力的性能基准！**
