@@ -1,0 +1,4 @@
+# ninja log v5
+0	11358	1752371319851389954	/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/build/temp.linux-x86_64-cpython-310/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/src/cpu/dcnv3_cpu.o	f635d693e9c45288
+0	23107	1752371331599388661	/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/build/temp.linux-x86_64-cpython-310/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/src/vision.o	cff1dd089914edf0
+0	69375	1752371377859388756	/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/build/temp.linux-x86_64-cpython-310/home/yukun/codes/MM-LandslideNet_202507/InternImage/classification/ops_dcnv3/src/cuda/dcnv3_cuda.o	616c0bd38e25b5f8
