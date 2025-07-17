@@ -40,7 +40,7 @@ class Config:
     PIN_MEMORY = True if torch.cuda.is_available() else False
 
     # ============= Model Configuration =============
-    MODEL_NAME = "MM-InternImage-TNF-T"
+    MODEL_NAME = "AsymmetricFusionModel"
     NUM_CLASSES = 1  # Binary classification (sigmoid output)
 
     # InternImage-T configuration (matching the compiled version)
@@ -59,12 +59,18 @@ class Config:
 
     # Input channel configuration
     OPTICAL_CHANNELS = 5  # R, G, B, NIR, NDVI
-    SAR_CHANNELS = 4  # VV_desc, VH_desc, VV_asc, VH_asc
-    SAR_DIFF_CHANNELS = 4  # VV_desc_diff, VH_desc_diff, VV_asc_diff, VH_asc_diff
+    SAR_COMBINED_CHANNELS = 8  # VV_desc, VH_desc, VV_asc, VH_asc, VV_desc_diff, VH_desc_diff, VV_asc_diff, VH_asc_diff
 
-    # TNF Fusion configuration
-    FUSION_CONFIG = {
-        "feature_dim": 768,  # Final feature dimension after InternImage (corrected)
+    # Lightweight SAR CNN configuration
+    SAR_CNN_CONFIG = {
+        "channels": [8, 16, 32, 64],  # Output channels for each stage
+        "kernel_size": 3,
+        "stride": 2,
+        "padding": 1,
+    }
+
+    # Cross Fusion Block configuration
+    FUSION_BLOCK_CONFIG = {
         "hidden_dim": 256,  # Hidden dimension in fusion block
         "num_heads": 8,  # Multi-head attention heads
         "dropout": 0.1,  # Dropout rate in fusion block

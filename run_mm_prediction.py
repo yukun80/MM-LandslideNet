@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Convenience script to run MM-InternImage-TNF inference.
+Convenience script to run Asymmetric Dual-Backbone Fusion Model inference.
 
 Usage:
-    python run_mm_prediction.py --model_path /path/to/model.pth --image_path /path/to/image.npy
-    python run_mm_prediction.py --model_path /path/to/model.pth --image_path /path/to/image.npy --verbose
+python run_mm_prediction.py \
+    --model_path outputs/mm_intern_image_tnf/AsymmetricFusionModel_best.pth \
+    --test_data_dir dataset/test_data \
+    --output_csv outputs/submissions/submission_InternImage.csv \
 """
 
 import sys
@@ -19,4 +21,3 @@ from mm_intern_image_src.predict import main
 
 if __name__ == "__main__":
     results = main()
-    print(f"\nPrediction completed: {results['prediction']} (confidence: {results['confidence']:.4f})")

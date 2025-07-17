@@ -1,111 +1,90 @@
-# **实施计划：MM-InternImage-TNF 冠军之路 (V2 - 模块化)**
+# 模型重构实施计划：非对称双主干融合模型
 
-**最终目标:** 竞赛第一名。
-**核心理念:** 基于第一性原理，将SOTA骨干网络 (**InternImage-T**)、前沿多模态融合策略 (**TNF-style Fusion**) 和以数据为中心的预处理相结合，构建一个代码结构清晰、模块化、可维护、性能卓越的解决方案。
+**作者**: Gemini Pro
+**日期**: 2025-07-16
+**状态**: 待实施
 
----
+## 1. 总体目标
 
-### **Phase 1 & 2: 基础工程 (已完成)**
+将当前基于“三主干+后期融合”的 `MM-InternImage-TNF`模型，重构为一个更高效、更强大、更符合多模态遥感数据特性的**“非对称双主干、分层交叉融合”**新架构。此举旨在从根本上解决当前模型存在的“信息瓶颈”、参数冗余和训练不稳定等问题。
 
-*   **成果:** 我们已完成数据清洗、分析，并为所有模态独立计算了归一化统计参数。一个基础的训练和评估流程也已验证完毕。我们将在这些坚实的基础上进行构建。
+新架构的核心思想是：以一个强大的InternImage模型作为处理主要信息（光学数据）的**主干**，以一个轻量级的CNN作为处理辅助信息（SAR数据）的**辅干**，并在主干的多个中间阶段，通过交叉注意力机制智能地将SAR特征融入光学特征中。
 
----
+## 2. 实施阶段与步骤
 
-### **Phase 3: SOTA模型模块化实施 (MM-InternImage-TNF)**
+### 阶段一：数据管道重构 (`mm_intern_image_src/dataset.py`)
 
-**设计总览与思路:** 本阶段的目标是将我们在研究阶段确立的先进算法思想，转化为一个结构清晰、代码优雅、易于调试和扩展的工程实现。我们选择**InternImage-T**作为骨干网络，因其动态感受野能更好地适应滑坡的不规则形态，同时其预训练权重能加速光学特征的学习。我们采用**三分支架构**，分别处理光学、SAR及SAR差值数据，以尊重不同模态的物理特性。最终，我们借鉴**TNF论文**中的核心思想，设计一个先进的融合模块来智能地整合三分支的特征。整个实现过程遵循**关注点分离 (Separation of Concerns)** 的软件工程原则，将代码拆分为配置、数据、模型、工具、训练和预测六个独立的模块，极大地提高了代码的可维护性和可扩展性。
+**目标**：修改 `Dataset`类，使其为新架构提供正确格式的数据：一个5通道的光学张量和一个8通道的SAR张量。
 
-**目标:** 将先进的算法思想，转化为一个结构清晰、代码优雅、易于调试和扩展的工程实现。我们将创建六个核心模块，各司其职。
+- **步骤 1.1：合并SAR通道**
 
-#### **Step 3.1: `config.py` - 全局配置中心**
+  - **任务**: 修改 `_split_modalities`函数。移除 `sar_diff`的独立处理，将 `sar`（4通道）和 `sar_diff`（4通道）在通道维度上拼接（concatenate）成一个单一的8通道 `sar_combined`张量。
+  - **验收标准**: 函数最终应返回 `optical` (H, W, 5) 和 `sar_combined` (H, W, 8) 两个Numpy数组。
+- **步骤 1.2：调整归一化统计**
 
-*   **文件路径:** `mm_intern_image_src/config.py`
-*   **目的:** 集中管理所有超参数和路径，避免硬编码，方便快速实验。
-*   **关键内容:**
-    *   **路径:** `DATA_DIR`, `TRAIN_CSV_PATH`, `STATS_FILE_PATH`, `EXCLUDE_FILE_PATH`, `CHECKPOINT_DIR`.
-    *   **硬件:** `DEVICE` (e.g., "cuda" if available else "cpu").
-    *   **模型参数:** `MODEL_NAME` (e.g., 'MM-InternImage-TNF-T'), `NUM_CLASSES` (1 for binary).
-    *   **训练超参数:** `BATCH_SIZE`, `NUM_EPOCHS`, `LEARNING_RATE`, `WEIGHT_DECAY`, `VALIDATION_SPLIT`.
-    *   **数据加载:** `NUM_WORKERS`.
+  - **任务**: 修改 `_extract_normalization_stats`函数。将 `sar`和 `sar_diff`的统计数据合并到一个新的键（例如 `sar_combined`）下。确保 `mean`和 `std`列表的顺序与上一步拼接的通道顺序一致。
+  - **验收标准**: `self.stats`字典中应包含 `'sar_combined'`键，其 `mean`和 `std`均为8个元素。
+- **步骤 1.3：更新归一化逻辑**
 
-#### **Step 3.2: `dataset.py` - 数据引擎**
+  - **任务**: 修改 `_normalize_modality`函数。确保它可以处理名为 `sar_combined`的新模态，并对其8个通道应用正确的Z-score归一化。
+  - **验收标准**: 函数能正确处理 `modality='sar_combined'`的调用。
+- **步骤 1.4：更新 `__getitem__`方法**
 
-*   **文件路径:** `mm_intern_image_src/dataset.py`
-*   **目的:** 封装所有与数据加载、预处理和增强相关的复杂逻辑。
-*   **核心实现:**
-    *   **`MultiModalLandslideDataset(torch.utils.data.Dataset)` 类:**
-        *   `__init__`: 接收 `df`, `data_dir`, `stats_dict`, `augmentations`。在此加载 `stats_dict`。
-        *   `__getitem__`: 实现以下流程：
-            1.  加载12通道 `.npy` 文件。
-            2.  **模态分离:** 拆分为 `optical`, `sar`, `sar_diff` 三个NumPy数组。
-            3.  **特征工程:** 为`optical`数据计算并堆叠NDVI通道，形成5通道数组。
-            4.  **独立归一化:** 使用`stats_dict`中的均值和标准差，对三个模态的数组分别进行独立的Z-score归一化。
-            5.  **数据增强:** 应用 `albumentations` 库（如果提供）。
-            6.  **返回字典:** 返回 `{'optical': ..., 'sar': ..., 'sar_diff': ..., 'label': ...}`。
-
-#### **Step 3.3: `utils.py` - 通用工具箱**
-
-*   **文件路径:** `mm_intern_image_src/utils.py`
-*   **目的:** 存放所有可重用的辅助函数和类，保持其他模块的整洁。
-*   **核心功能:**
-    *   **损失函数:**
-        *   `FocalLoss(nn.Module)`: 实现Focal Loss，专注于难分样本。
-        *   `DiceLoss(nn.Module)`: 实现Dice Loss，优化分割类指标，对类别不平衡有良好效果。
-        *   `CombinedLoss(nn.Module)`: 将上述两种损失组合起来，`L = L_focal + L_dice`。
-    *   **评估指标:**
-        *   `calculate_metrics(preds, labels)`: 输入模型输出和真实标签，返回一个包含`f1_score`, `precision`, `recall`, `accuracy`的字典。
-    *   **检查点管理:**
-        *   `save_checkpoint(state, filepath)`: 保存模型、优化器等状态到文件。
-        *   `load_checkpoint(filepath, model, optimizer)`: 加载状态。
-    *   **环境设置:**
-        *   `seed_everything(seed)`: 设置全局随机种子以保证实验可复现。
-
-#### **Step 3.4: `models.py` - 模型架构定义**
-
-*   **文件路径:** `mm_intern_image_src/models.py`
-*   **目的:** 仅包含模型架构的定义，与训练、数据等逻辑完全解耦。
-*   **核心实现:**
-    *   **`TNFFusionBlock(nn.Module)` 类:**
-        *   实现受TNF论文启发的融合块。接收三个分支的特征图作为输入，输出融合后的单一特征向量。
-        *   内部逻辑包含：全局池化、自注意力、交叉注意力、门控机制。
-    *   **`MMInternImageTNF(nn.Module)` 类:**
-        *   `__init__`: 实例化三个`InternImage-T`骨干网络（光学分支加载预训练权重，SAR分支随机初始化），并实例化`TNFFusionBlock`和最终的分类头。
-        *   `forward`: 定义数据流，将三个输入分别送入三个分支，将输出特征送入融合块，最后通过分类头得到预测结果。
-
-#### **Step 3.5: `train.py` - 训练流程编排**
-
-*   **文件路径:** `mm_intern_image_src/train.py`
-*   **目的:** 编排整个训练和验证流程，连接数据、模型、损失和优化器。
-*   **核心功能:**
-    *   **`train_one_epoch(model, dataloader, optimizer, criterion, device)`:**
-        *   实现单次epoch的训练循环，使用`tqdm`显示进度条。
-    *   **`evaluate(model, dataloader, criterion, device)`:**
-        *   实现验证逻辑，调用`utils.calculate_metrics`计算性能。
-    *   **`run_training()` (主函数):**
-        1.  **设置:** 调用`utils.seed_everything`，加载`config`。
-        2.  **数据准备:** 加载CSV，执行过滤和划分，创建`MultiModalLandslideDataset`实例，并特别注意为`train_loader`创建`WeightedRandomSampler`来处理类别不平衡。
-        3.  **模型初始化:** 实例化`MMInternImageTNF`，`CombinedLoss`，`AdamW`优化器，以及学习率调度器 (e.g., `CosineAnnealingLR`)。
-        4.  **主循环:** 循环遍历epochs，调用`train_one_epoch`和`evaluate`。
-        5.  **保存模型:** 在每个epoch后，根据验证集F1分数，调用`utils.save_checkpoint`保存最佳模型。
-
-#### **Step 3.6: `predict.py` - 推理引擎**
-
-*   **文件路径:** `mm_intern_image_src/predict.py`
-*   **目的:** 提供一个独立的、易于使用的脚本，用于对新的、单个的`.npy`文件进行预测。
-*   **核心功能:**
-    *   **`preprocess_single_image(image_path, stats_dict)` 函数:**
-        *   复制`Dataset`中的单样本处理逻辑（加载、分离、NDVI、归一化）。
-    *   **`predict(model, image_tensor, device)` 函数:**
-        *   接收模型和预处理后的张量，设置为`eval`模式，在`torch.no_grad()`下执行推理，返回预测概率。
-    *   **主逻辑:**
-        1.  使用`argparse`接收`--model_path`（模型检查点）和`--image_path`（待预测图片）作为命令行参数。
-        2.  加载`channel_stats.json`。
-        3.  调用`utils.load_checkpoint`加载训练好的模型权重。
-        4.  调用`preprocess_single_image`处理输入图片。
-        5.  调用`predict`获得结果并打印。
+  - **任务**: 修改 `__getitem__`的返回字典。使其包含两个键：`"optical"`和 `"sar"`，分别对应5通道的光学张量和8通道的SAR张量。移除 `"sar_diff"`键。
+  - **验收标准**: DataLoader产出的每个batch应为包含 `'optical'`和 `'sar'`键的字典。
 
 ---
 
-### **Phase 4 & 5: 迭代优化与冲刺 (待启动)**
+### 阶段二：模型架构重构 (`mm_intern_image_src/models.py`)
 
-*   在`MM-InternImage-TNF` V1版本稳定后，启动主动学习循环，并为最终的模型集成和报告撰写做准备。此模块化结构将极大地简化后续的实验和迭代过程。
+**目标**：实现全新的 `AsymmetricFusionModel`，替换掉旧的 `MMInternImageTNF`。
+
+- **步骤 2.1：定义轻量级SAR辅干 (`LightweightSARCNN`)**
+
+  - **任务**: 创建一个新的 `nn.Module`子类，名为 `LightweightSARCNN`。
+  - **输入**: 8通道的SAR数据。
+  - **结构**: 构建一个类似FPN（特征金字塔网络）的结构。它应包含多个卷积块，并能在**不同尺度**上输出特征图，以匹配InternImage主干的4个Stage。
+  - **输出**: 一个包含4个特征图的列表或元组，每个特征图的尺寸与InternImage对应Stage的输出尺寸相匹配。
+- **步骤 2.2：定义交叉融合模块 (`CrossFusionBlock`)**
+
+  - **任务**: 创建一个新的 `nn.Module`子类，名为 `CrossFusionBlock`。
+  - **输入**: `optical_features` (来自光学主干，作为Query) 和 `sar_features` (来自SAR辅干，作为Key和Value)。
+  - **结构**:
+    1. 实现标准的多头交叉注意力（Multi-Head Cross-Attention）。
+    2. 实现自适应门控：并行地，将 `optical_features`通过一个小的卷积层和Sigmoid函数，生成一个门控权重（gate）。
+    3. 将交叉注意力的输出乘以这个门控权重，然后通过残差连接加回到原始的 `optical_features`上。
+- **步骤 2.3：构建最终模型 (`AsymmetricFusionModel`)**
+
+  - **任务**: 重命名或替换 `MMInternImageTNF`为一个新的 `AsymmetricFusionModel`类。
+  - **结构**:
+    1. **主干**: 创建**一个**InternImage实例作为 `optical_backbone`。修改其 `patch_embed`层以接受5通道输入，并实现智能权重初始化。
+    2. **辅干**: 创建一个 `LightweightSARCNN`实例作为 `sar_backbone`。
+    3. **融合模块**: 创建4个 `CrossFusionBlock`实例，每个对应一个融合阶段。
+  - **`forward`方法逻辑**:
+    1. SAR数据 -> `sar_backbone` -> 获得多尺度SAR特征图。
+    2. **逐阶段**执行 `optical_backbone`的前向传播。
+    3. 在每个Stage后，使用相应的 `CrossFusionBlock`将对应的SAR特征图融合进来。
+    4. 最终输出送入分类头。
+
+---
+
+### 阶段三：配置与清理
+
+**目标**：调整项目配置，移除旧代码，并进行最终验证。
+
+- **步骤 3.1：更新配置文件 (`mm_intern_image_src/config.py`)**
+
+  - **任务**: 移除与旧的“三主干”和 `TNFFusionBlock`相关的配置项。添加定义 `LightweightSARCNN`和 `CrossFusionBlock`结构的新配置项。更新 `MODEL_NAME`。
+- **步骤 3.2：清理旧代码**
+
+  - **任务**: 在 `models.py`中，安全地删除旧的 `MMInternImageTNF`、`InternImageBackbone`和 `TNFFusionBlock`类。确保 `train.py`和 `predict.py`中的模型创建调用已更新。
+- **步骤 3.3：验证**
+
+  - **任务**: 在 `models.py`的 `if __name__ == "__main__"`块中，编写一个测试脚本。创建一个伪造的数据批次（包含 `"optical"`和 `"sar"`张量），执行一次完整的前向传播，并使用 `assert`和 `print`检查所有中间步骤和最终输出的张量形状，确保整个模型的维度匹配正确无误。
+
+## 3. 预期收益
+
+- **性能提升**: 新架构更符合多模态学习范式，有望取得更高的F1分数。
+- **稳定性增强**: 解决了信息瓶颈和数值不稳定风险，`Loss=NaN`问题将不复存在。
+- **效率提升**: 参数量大幅减少，训练和推理速度将得到提升。
+- **可维护性提高**: 代码结构更清晰、更简洁。
