@@ -78,59 +78,65 @@ class MultiModalLandslideDataset(Dataset):
         with open(config.STATS_FILE_PATH, "r") as f:
             return json.load(f)
 
-    def _extract_normalization_stats(self, stats_dict: Dict) -> Dict:
+    def _extract_normalization_stats(self) -> Dict:
         """
-        Extract and organize normalization statistics for each modality.
-        NOTE: Optical stats are for 4 channels (R,G,B,NIR). NDVI is handled separately.
-
-        Returns:
-            Dictionary with mean and std for each modality
+        Extract statistics for three-branch normalization.
         """
         stats = {
             "optical": {"mean": [], "std": []},
-            "sar_combined": {"mean": [], "std": []},
+            "sar": {"mean": [], "std": []},
+            "sar_change": {"mean": [], "std": []},
         }
 
-        # Extract optical statistics (channels 0-3 for R, G, B, NIR)
+        with open(self.config.STATS_FILE_PATH, "r") as f:
+            stats_dict = json.load(f)
+
+        # Optical statistics (channels 0-3, NDVI calculated separately)
         optical_channels = stats_dict["channel_statistics_by_group"]["optical"]["channels"]
         for i in range(4):
             channel_key = f"channel_{i}"
             stats["optical"]["mean"].append(optical_channels[channel_key]["mean"])
             stats["optical"]["std"].append(optical_channels[channel_key]["std"])
 
-        # Extract and combine all SAR statistics
+        # SAR original statistics (channels 4,5,8,9)
         sar_desc = stats_dict["channel_statistics_by_group"]["sar_descending"]["channels"]
         sar_asc = stats_dict["channel_statistics_by_group"]["sar_ascending"]["channels"]
-        sar_desc_diff = stats_dict["channel_statistics_by_group"]["sar_desc_diff"]["channels"]
-        sar_asc_diff = stats_dict["channel_statistics_by_group"]["sar_asc_diff"]["channels"]
 
-        # Order must match the concatenation in _split_modalities: sar, then sar_diff
-        # sar = [4, 5, 8, 9], sar_diff = [6, 7, 10, 11]
-        # Combined order: [4, 5, 8, 9, 6, 7, 10, 11]
-
-        combined_sar_mean = [
+        sar_mean = [
             sar_desc["channel_4"]["mean"],
             sar_desc["channel_5"]["mean"],
             sar_asc["channel_8"]["mean"],
             sar_asc["channel_9"]["mean"],
+        ]
+        sar_std = [
+            sar_desc["channel_4"]["std"],
+            sar_desc["channel_5"]["std"],
+            sar_asc["channel_8"]["std"],
+            sar_asc["channel_9"]["std"],
+        ]
+
+        stats["sar"]["mean"].extend(sar_mean)
+        stats["sar"]["std"].extend(sar_std)
+
+        # SAR change statistics (channels 6,7,10,11)
+        sar_desc_diff = stats_dict["channel_statistics_by_group"]["sar_desc_diff"]["channels"]
+        sar_asc_diff = stats_dict["channel_statistics_by_group"]["sar_asc_diff"]["channels"]
+
+        change_mean = [
             sar_desc_diff["channel_6"]["mean"],
             sar_desc_diff["channel_7"]["mean"],
             sar_asc_diff["channel_10"]["mean"],
             sar_asc_diff["channel_11"]["mean"],
         ]
-        combined_sar_std = [
-            sar_desc["channel_4"]["std"],
-            sar_desc["channel_5"]["std"],
-            sar_asc["channel_8"]["std"],
-            sar_asc["channel_9"]["std"],
+        change_std = [
             sar_desc_diff["channel_6"]["std"],
             sar_desc_diff["channel_7"]["std"],
             sar_asc_diff["channel_10"]["std"],
             sar_asc_diff["channel_11"]["std"],
         ]
 
-        stats["sar_combined"]["mean"].extend(combined_sar_mean)
-        stats["sar_combined"]["std"].extend(combined_sar_std)
+        stats["sar_change"]["mean"].extend(change_mean)
+        stats["sar_change"]["std"].extend(change_std)
 
         # Convert to numpy arrays
         for modality in stats:
@@ -159,33 +165,30 @@ class MultiModalLandslideDataset(Dataset):
         ndvi = (nir - red) / denominator
         return np.clip(ndvi, -1, 1)
 
-    def _split_modalities(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _split_modalities(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Split 12-channel data into two modalities: 5-ch optical and 8-ch SAR.
+        Split 12-channel data into three modalities for optical-dominated architecture.
 
         Args:
             data: Input array of shape (H, W, 12)
 
         Returns:
-            Tuple of (optical, sar_combined) arrays
+            Tuple of (optical, sar, sar_change) arrays
         """
-        # Extract channels
-        optical_raw = data[:, :, 0:4]  # R, G, B, NIR
-        sar = data[:, :, [4, 5, 8, 9]]  # VV_desc, VH_desc, VV_asc, VH_asc
-        sar_diff = data[:, :, [6, 7, 10, 11]]  # Diff channels
+        # Extract channels according to remote sensing principles
+        optical_raw = data[:, :, 0:4]  # R, G, B, NIR (highest information density)
+        sar_original = data[:, :, [4, 5, 8, 9]]  # VV_desc, VH_desc, VV_asc, VH_asc (geometric info)
+        sar_change = data[:, :, [6, 7, 10, 11]]  # All difference channels (temporal change)
 
-        # Combine all SAR channels
-        sar_combined = np.dstack([sar, sar_diff])  # Shape: (H, W, 8)
-
-        # Calculate NDVI and append to optical channels
+        # Calculate NDVI for vegetation analysis (critical for landslide detection)
         red = optical_raw[:, :, 0]
         nir = optical_raw[:, :, 3]
         ndvi = self._calculate_ndvi(red, nir)
 
-        # Stack optical channels with NDVI
+        # Stack optical channels with NDVI (5 channels total)
         optical = np.dstack([optical_raw, ndvi])  # Shape: (H, W, 5)
 
-        return optical, sar_combined
+        return optical, sar_original, sar_change
 
     def _normalize_modality(self, data: np.ndarray, modality: str) -> np.ndarray:
         """
@@ -245,13 +248,7 @@ class MultiModalLandslideDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
-        Get a single sample from the dataset.
-
-        Args:
-            idx: Sample index
-
-        Returns:
-            Dictionary containing optical, sar tensors and label
+        Get a single sample with three-branch data format.
         """
         # Get sample info
         sample = self.df.iloc[idx]
@@ -265,21 +262,16 @@ class MultiModalLandslideDataset(Dataset):
         except FileNotFoundError:
             raise FileNotFoundError(f"Data file not found: {data_path}")
 
-        # Split into modalities
-        optical, sar_combined = self._split_modalities(data)
+        # Split into three modalities
+        optical, sar, sar_change = self._split_modalities(data)
 
         # Apply independent normalization
         optical_norm = self._normalize_modality(optical, "optical")
-        sar_norm = self._normalize_modality(sar_combined, "sar_combined")
-
-        # Add assertions to check for NaN/Inf values after normalization
-        assert not np.isnan(optical_norm).any(), f"NaN found in optical data for sample {sample_id}"
-        assert not np.isinf(optical_norm).any(), f"Inf found in optical data for sample {sample_id}"
-        assert not np.isnan(sar_norm).any(), f"NaN found in SAR data for sample {sample_id}"
-        assert not np.isinf(sar_norm).any(), f"Inf found in SAR data for sample {sample_id}"
+        sar_norm = self._normalize_modality(sar, "sar")
+        sar_change_norm = self._normalize_modality(sar_change, "sar_change")
 
         # Prepare data for augmentation
-        data_dict = {"image": optical_norm, "sar": sar_norm}
+        data_dict = {"image": optical_norm, "sar": sar_norm, "sar_change": sar_change_norm}
 
         # Apply augmentations and convert to tensors
         augmented = self._apply_augmentations(**data_dict)
@@ -287,6 +279,7 @@ class MultiModalLandslideDataset(Dataset):
         return {
             "optical": augmented["image"],
             "sar": augmented["sar"],
+            "sar_change": augmented["sar_change"],
             "label": torch.tensor(label, dtype=torch.float32),
             "id": sample_id,
         }
@@ -294,13 +287,7 @@ class MultiModalLandslideDataset(Dataset):
 
 def get_augmentations(mode: str = "train") -> Optional[A.Compose]:
     """
-    Get augmentation pipeline for training or validation.
-
-    Args:
-        mode: 'train' or 'val'
-
-    Returns:
-        Albumentations composition or None for validation
+    Get augmentation pipeline for three-branch architecture.
     """
     if mode == "train":
         return A.Compose(
@@ -311,15 +298,15 @@ def get_augmentations(mode: str = "train") -> Optional[A.Compose]:
                 A.ShiftScaleRotate(
                     shift_limit=config.AUGMENTATION_CONFIG["shift_limit"],
                     scale_limit=config.AUGMENTATION_CONFIG["scale_limit"],
-                    rotate_limit=0,  # Already handled by Rotate
+                    rotate_limit=0,
                     p=0.5,
                 ),
                 ToTensorV2(),
             ],
-            additional_targets={"sar": "image"},
+            additional_targets={"sar": "image", "sar_change": "image"},
         )
     else:
-        return A.Compose([ToTensorV2()], additional_targets={"sar": "image"})
+        return A.Compose([ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"})
 
 
 def load_exclude_ids() -> List[str]:

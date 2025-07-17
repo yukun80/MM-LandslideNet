@@ -30,7 +30,7 @@ __description__ = "Multi-Modal InternImage with TNF Fusion for Landslide Detecti
 
 # Import key components for easy access
 from .config import config
-from .models import create_model
+from .models import create_optical_dominated_model as create_model
 from .dataset import MultiModalLandslideDataset, create_datasets
 from .train import run_training
 from .utils import (

@@ -15,7 +15,8 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 # Import and run training
-from mm_intern_image_src.train import main
+from mm_intern_image_src.train import run_training
 
 if __name__ == "__main__":
-    main()
+    # The argument parsing is now handled inside run_training
+    run_training(None)

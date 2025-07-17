@@ -28,7 +28,7 @@ except Exception as e:
 
 try:
     print("Testing models import...")
-    from models import create_model
+    from mm_intern_image_src.models import create_model
 
     print("✅ Models import successful")
 except Exception as e:
