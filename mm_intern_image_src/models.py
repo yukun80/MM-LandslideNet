@@ -9,6 +9,8 @@ from typing import Dict, List
 # --- InternImage and DCNv3 Imports ---
 from .intern_image_import import InternImage
 
+"""python -m mm_intern_image_src.models"""
+
 
 # --- Lightweight SAR Backbones ---
 class LightweightSARCNN(nn.Module):

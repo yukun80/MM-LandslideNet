@@ -5,22 +5,21 @@ This module contains reusable utility functions including loss functions,
 evaluation metrics, checkpoint management, and reproducibility utilities.
 """
 
-import os
-import random
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Tuple, Optional, Any
-from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, roc_auc_score
+import numpy as np
+import random
+import os
+import json
 from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
+from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, roc_auc_score
+import logging
+import torch.nn.functional as F
 
-try:
-    # Try relative import first (when imported as part of package)
-    from .config import config
-except ImportError:
-    # Fall back to absolute import (when run directly)
-    from config import config
+"""python -m mm_intern_image_src.utils"""
+
+logger = logging.getLogger(__name__)
 
 
 class FocalLoss(nn.Module):
@@ -194,135 +193,81 @@ class CombinedLoss(nn.Module):
         return {"focal_loss": focal, "dice_loss": dice, "total_loss": total}
 
 
-def calculate_metrics(y_pred: torch.Tensor, y_true: torch.Tensor, threshold: float = 0.5) -> Dict[str, float]:
-    """
-    Calculate comprehensive evaluation metrics for binary classification.
-
-    Args:
-        y_pred: Predicted probabilities or logits [N] or [N, 1]
-        y_true: Ground truth labels [N]
-        threshold: Classification threshold (default: 0.5)
-
-    Returns:
-        Dictionary containing various metrics
-    """
-    # Ensure proper shapes and convert to numpy
-    if isinstance(y_pred, torch.Tensor):
-        if y_pred.dim() == 2 and y_pred.size(1) == 1:
-            y_pred = y_pred.squeeze(1)
-        # Apply sigmoid if logits
-        if y_pred.min() < 0 or y_pred.max() > 1:
-            y_pred = torch.sigmoid(y_pred)
-        y_pred_np = y_pred.detach().cpu().numpy()
-    else:
-        y_pred_np = y_pred
-
-    if isinstance(y_true, torch.Tensor):
-        y_true_np = y_true.detach().cpu().numpy()
-    else:
-        y_true_np = y_true
-
+def calculate_metrics(predictions: np.ndarray, labels: np.ndarray, threshold: float = 0.5) -> Dict[str, float]:
+    """Calculate classification metrics."""
     # Convert probabilities to binary predictions
-    y_pred_binary = (y_pred_np >= threshold).astype(int)
+    binary_preds = (predictions >= threshold).astype(int)
 
     # Calculate metrics
-    try:
-        metrics = {
-            "accuracy": accuracy_score(y_true_np, y_pred_binary),
-            "precision": precision_score(y_true_np, y_pred_binary, zero_division=0),
-            "recall": recall_score(y_true_np, y_pred_binary, zero_division=0),
-            "f1_score": f1_score(y_true_np, y_pred_binary, zero_division=0),
-        }
-
-        # Add AUC if there are both classes present
-        if len(np.unique(y_true_np)) > 1:
-            metrics["auc"] = roc_auc_score(y_true_np, y_pred_np)
-        else:
-            metrics["auc"] = 0.0
-
-    except Exception as e:
-        print(f"Warning: Error calculating metrics: {e}")
-        metrics = {"accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1_score": 0.0, "auc": 0.0}
+    metrics = {
+        "accuracy": accuracy_score(labels, binary_preds),
+        "f1_score": f1_score(labels, binary_preds, zero_division=0),
+        "precision": precision_score(labels, binary_preds, zero_division=0),
+        "recall": recall_score(labels, binary_preds, zero_division=0),
+        "auc": roc_auc_score(labels, predictions) if len(np.unique(labels)) > 1 else 0.0,
+    }
 
     return metrics
 
 
-def save_checkpoint(state: Dict[str, Any], filepath: Path, is_best: bool = False) -> None:
-    """
-    Save model checkpoint to file.
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    epoch: int,
+    metrics: Dict[str, Any],
+    config_dict: Dict[str, Any],
+    filepath: Path,
+    is_best: bool = False,
+    best_model_path: Optional[Path] = None,
+):
+    """Save training checkpoint."""
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "metrics": metrics,
+        "config": config_dict,
+        "best_metric": metrics.get("val_f1_score", 0.0),
+    }
 
-    Args:
-        state: Dictionary containing model state, optimizer state, etc.
-        filepath: Path to save checkpoint
-        is_best: Whether this is the best model so far
-    """
-    try:
-        # Ensure directory exists
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+    # Save checkpoint
+    torch.save(checkpoint, filepath)
+    logger.info(f"Checkpoint saved: {filepath}")
 
-        # Save checkpoint
-        torch.save(state, filepath)
-        print(f"Checkpoint saved: {filepath}")
-
-        # Save as best model if applicable
-        if is_best:
-            best_path = config.get_best_model_path()
-            torch.save(state, best_path)
-            print(f"Best model saved: {best_path}")
-
-    except Exception as e:
-        print(f"Error saving checkpoint: {e}")
+    # Save best model separately
+    if is_best and best_model_path:
+        torch.save(checkpoint, best_model_path)
+        logger.info(f"Best model saved: {best_model_path}")
 
 
 def load_checkpoint(
-    filepath: Path, model: nn.Module, optimizer: Optional[torch.optim.Optimizer] = None, device: Optional[str] = None
+    filepath: Path,
+    model: nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
 ) -> Dict[str, Any]:
-    """
-    Load model checkpoint from file.
+    """Load training checkpoint."""
+    checkpoint = torch.load(filepath, map_location="cpu")
 
-    Args:
-        filepath: Path to checkpoint file
-        model: Model to load state into
-        optimizer: Optimizer to load state into (optional)
-        device: Device to load checkpoint on
+    # Load model state
+    model.load_state_dict(checkpoint["model_state_dict"])
 
-    Returns:
-        Dictionary containing loaded checkpoint information
-    """
-    if device is None:
-        device = config.DEVICE
+    # Load optimizer state
+    if optimizer and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-    try:
-        # Load checkpoint
-        checkpoint = torch.load(filepath, map_location=device)
+    # Load scheduler state
+    if scheduler and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-        # Load model state
-        model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"Model state loaded from {filepath}")
-
-        # Load optimizer state if provided
-        if optimizer is not None and "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print("Optimizer state loaded")
-
-        return {
-            "epoch": checkpoint.get("epoch", 0),
-            "best_metric": checkpoint.get("best_metric", 0.0),
-            "metrics": checkpoint.get("metrics", {}),
-        }
-
-    except Exception as e:
-        print(f"Error loading checkpoint: {e}")
-        return {"epoch": 0, "best_metric": 0.0, "metrics": {}}
+    logger.info(f"Checkpoint loaded from: {filepath}")
+    return checkpoint
 
 
-def seed_everything(seed: int = 42) -> None:
-    """
-    Set random seeds for reproducibility.
-
-    Args:
-        seed: Random seed value
-    """
+def seed_everything(seed: int = 42):
+    """Set random seeds for reproducibility."""
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -331,112 +276,260 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print(f"Random seed set to {seed}")
+    logger.info(f"Random seed set to {seed}")
 
 
-def count_parameters(model: nn.Module) -> int:
-    """
-    Count the number of trainable parameters in a model.
-
-    Args:
-        model: PyTorch model
-
-    Returns:
-        Number of trainable parameters
-    """
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model: nn.Module) -> Tuple[int, int]:
+    """Count total and trainable parameters in model."""
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
 
 
 def get_class_weights(labels: np.ndarray) -> torch.Tensor:
-    """
-    Calculate class weights for imbalanced datasets.
-
-    Args:
-        labels: Array of class labels
-
-    Returns:
-        Tensor of class weights
-    """
-    unique_classes, counts = np.unique(labels, return_counts=True)
+    """Calculate class weights for handling imbalanced data."""
+    unique_labels, counts = np.unique(labels, return_counts=True)
     total_samples = len(labels)
 
-    # Calculate weights inversely proportional to class frequency
-    weights = total_samples / (len(unique_classes) * counts)
+    # Calculate weights inversely proportional to class frequencies
+    weights = total_samples / (len(unique_labels) * counts)
 
     # Create weight tensor
-    weight_dict = dict(zip(unique_classes, weights))
-    class_weights = torch.tensor([weight_dict[i] for i in range(len(unique_classes))], dtype=torch.float32)
+    class_weights = torch.zeros(len(unique_labels), dtype=torch.float32)
+    for i, label in enumerate(unique_labels):
+        class_weights[int(label)] = weights[i]
 
+    logger.info(f"Class weights: {dict(zip(unique_labels, weights))}")
     return class_weights
 
 
-def format_metrics(metrics: Dict[str, float], prefix: str = "") -> str:
-    """
-    Format metrics dictionary for pretty printing.
+def format_metrics(metrics: Dict[str, Any]) -> str:
+    """Format metrics for logging."""
+    formatted_lines = []
 
-    Args:
-        metrics: Dictionary of metric names and values
-        prefix: Prefix to add to metric names
+    # Training metrics
+    train_metrics = {
+        k: v for k, v in metrics.items() if k.startswith("train") or k in ["loss", "focal_loss", "dice_loss"]
+    }
+    if train_metrics:
+        train_str = " | ".join(
+            [f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in train_metrics.items()]
+        )
+        formatted_lines.append(f"Train: {train_str}")
 
-    Returns:
-        Formatted string
-    """
-    formatted = []
-    for key, value in metrics.items():
-        if isinstance(value, float):
-            formatted.append(f"{prefix}{key}: {value:.4f}")
-        else:
-            formatted.append(f"{prefix}{key}: {value}")
+    # Validation metrics
+    val_metrics = {k: v for k, v in metrics.items() if k.startswith("val_")}
+    if val_metrics:
+        val_str = " | ".join(
+            [f"{k[4:]}: {v:.4f}" if isinstance(v, float) else f"{k[4:]}: {v}" for k, v in val_metrics.items()]
+        )
+        formatted_lines.append(f"Val:   {val_str}")
 
-    return " | ".join(formatted)
+    # Learning rate
+    if "lr" in metrics:
+        formatted_lines.append(f"LR: {metrics['lr']:.2e}")
+
+    return "\n".join(formatted_lines)
 
 
 class EarlyStopping:
-    """
-    Early stopping utility to stop training when validation metric stops improving.
-    """
+    """Early stopping to prevent overfitting."""
 
-    def __init__(self, patience: int = 10, min_delta: float = 0.0, mode: str = "max"):
+    def __init__(self, patience: int = 10, monitor: str = "val_f1_score", mode: str = "max", min_delta: float = 0.0):
         """
-        Initialize early stopping.
-
         Args:
-            patience: Number of epochs to wait for improvement
-            min_delta: Minimum change to qualify as improvement
-            mode: 'max' for metrics to maximize, 'min' for metrics to minimize
+            patience: Number of epochs with no improvement after which training will be stopped
+            monitor: Metric to monitor
+            mode: 'min' or 'max' - whether to minimize or maximize the monitored metric
+            min_delta: Minimum change to qualify as an improvement
         """
         self.patience = patience
-        self.min_delta = min_delta
+        self.monitor = monitor
         self.mode = mode
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
+        self.min_delta = min_delta
+        self.wait = 0
+        self.best_metric = float("-inf") if mode == "max" else float("inf")
+        self.should_stop = False
 
-    def __call__(self, metric_value: float) -> bool:
-        """
-        Check if training should be stopped.
-
-        Args:
-            metric_value: Current metric value
-
-        Returns:
-            True if training should be stopped
-        """
-        if self.best_score is None:
-            self.best_score = metric_value
-        elif self._is_improvement(metric_value):
-            self.best_score = metric_value
-            self.counter = 0
-        else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-
-        return self.early_stop
-
-    def _is_improvement(self, metric_value: float) -> bool:
-        """Check if the current metric value is an improvement."""
+    def __call__(self, current_metric: float):
+        """Check if training should stop."""
         if self.mode == "max":
-            return metric_value > self.best_score + self.min_delta
+            improved = current_metric > self.best_metric + self.min_delta
         else:
-            return metric_value < self.best_score - self.min_delta
+            improved = current_metric < self.best_metric - self.min_delta
+
+        if improved:
+            self.best_metric = current_metric
+            self.wait = 0
+        else:
+            self.wait += 1
+
+        if self.wait >= self.patience:
+            self.should_stop = True
+            logger.info(f"Early stopping triggered. Best {self.monitor}: {self.best_metric:.4f}")
+
+
+class MetricTracker:
+    """Track and compute moving averages of metrics."""
+
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self.metrics = {}
+
+    def update(self, **kwargs):
+        """Update metrics with new values."""
+        for key, value in kwargs.items():
+            if key not in self.metrics:
+                self.metrics[key] = []
+            self.metrics[key].append(value)
+
+            # Keep only recent values
+            if len(self.metrics[key]) > self.window_size:
+                self.metrics[key] = self.metrics[key][-self.window_size :]
+
+    def get_average(self, key: str) -> float:
+        """Get moving average for a metric."""
+        if key in self.metrics and self.metrics[key]:
+            return np.mean(self.metrics[key])
+        return 0.0
+
+    def get_all_averages(self) -> Dict[str, float]:
+        """Get moving averages for all metrics."""
+        return {key: self.get_average(key) for key in self.metrics}
+
+
+def get_model_size(model: nn.Module) -> float:
+    """Get model size in MB."""
+    param_size = 0
+    buffer_size = 0
+
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+
+    for buffer in model.buffers():
+        buffer_size += buffer.nelement() * buffer.element_size()
+
+    size_mb = (param_size + buffer_size) / 1024 / 1024
+    return size_mb
+
+
+def setup_logging(log_level: str = "INFO", log_file: Optional[Path] = None):
+    """Setup logging configuration."""
+    # Create formatter
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    # Setup root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level.upper()))
+
+    # Clear existing handlers
+    root_logger.handlers.clear()
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # File handler (if specified)
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+
+def create_submission(predictions: Dict[str, float], threshold: float = 0.5) -> Dict[str, Any]:
+    """Create submission from predictions."""
+    submission_data = []
+
+    for image_id, prob in predictions.items():
+        prediction = 1 if prob >= threshold else 0
+        submission_data.append({"ID": image_id, "label": prediction, "probability": prob})
+
+    return submission_data
+
+
+def validate_data_integrity(data_dir: Path, csv_path: Path) -> Tuple[bool, list]:
+    """Validate that all samples in CSV have corresponding data files."""
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    missing_files = []
+
+    for _, row in df.iterrows():
+        sample_id = row["ID"]
+        data_path = data_dir / f"{sample_id}.npy"
+
+        if not data_path.exists():
+            missing_files.append(sample_id)
+
+    is_valid = len(missing_files) == 0
+
+    if not is_valid:
+        logger.warning(f"Found {len(missing_files)} missing data files")
+    else:
+        logger.info("Data integrity check passed")
+
+    return is_valid, missing_files
+
+
+def log_system_info():
+    """Log system and environment information."""
+    import torch
+    import platform
+
+    logger.info("=" * 50)
+    logger.info("System Information:")
+    logger.info(f"Platform: {platform.platform()}")
+    logger.info(f"Python version: {platform.python_version()}")
+    logger.info(f"PyTorch version: {torch.__version__}")
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
+
+    if torch.cuda.is_available():
+        logger.info(f"CUDA version: {torch.version.cuda}")
+        logger.info(f"GPU count: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            logger.info(f"GPU {i}: {gpu_name} ({gpu_memory:.1f} GB)")
+
+    logger.info("=" * 50)
+
+
+def compute_class_distribution(df):
+    """Compute and log class distribution."""
+    distribution = df["label"].value_counts().sort_index()
+    total = len(df)
+
+    logger.info("Class Distribution:")
+    for label, count in distribution.items():
+        percentage = (count / total) * 100
+        logger.info(f"  Class {label}: {count} samples ({percentage:.1f}%)")
+
+    return distribution
+
+
+def check_gpu_memory():
+    """Check GPU memory usage."""
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            cached = torch.cuda.memory_reserved(i) / 1024**3
+            total = torch.cuda.get_device_properties(i).total_memory / 1024**3
+
+            logger.info(f"GPU {i} Memory: {allocated:.1f}GB allocated, {cached:.1f}GB cached, {total:.1f}GB total")
+
+
+def optimize_model_for_inference(model: nn.Module) -> nn.Module:
+    """Optimize model for inference."""
+    model.eval()
+
+    # Try to compile model if using PyTorch 2.0+
+    try:
+        if hasattr(torch, "compile"):
+            model = torch.compile(model)
+            logger.info("Model compiled for faster inference")
+    except Exception as e:
+        logger.warning(f"Model compilation failed: {e}")
+
+    return model
