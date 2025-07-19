@@ -72,9 +72,32 @@ class MultiModalLandslideDataset(Dataset):
         print(f"TNF Dataset initialized: {len(self.df)} samples in {mode} mode")
 
     def _load_stats(self) -> Dict:
-        """Load channel statistics from JSON file"""
+        """Load channel statistics from JSON file and flatten them."""
         with open(config.STATS_FILE_PATH, "r") as f:
-            return json.load(f)
+            stats = json.load(f)
+        
+        channel_means = []
+        channel_stds = []
+        
+        # The stats are nested, so we need to extract them in the correct order
+        channel_groups = stats.get("channel_statistics_by_group", {})
+        
+        # We need to ensure the channels are ordered correctly from 0 to 11
+        all_channels = {}
+        for group in channel_groups.values():
+            for ch_key, ch_data in group.get("channels", {}).items():
+                all_channels[ch_data["channel_index"]] = ch_data
+                
+        for i in range(12): # Assuming 12 channels total
+            if i in all_channels:
+                channel_means.append(all_channels[i]["mean"])
+                channel_stds.append(all_channels[i]["std"])
+            else:
+                # Handle missing channels if necessary, e.g., by appending default values
+                channel_means.append(0.0)
+                channel_stds.append(1.0)
+
+        return {"channel_means": channel_means, "channel_stds": channel_stds}
 
     def _extract_normalization_stats(self, full_stats: Dict) -> Dict:
         """
@@ -83,11 +106,12 @@ class MultiModalLandslideDataset(Dataset):
         Returns:
             Dict with normalization stats for optical and sar modalities
         """
+        # The _load_stats function now returns the correct format, so we just need to slice it
         return {
             # Optical channels: R, G, B, NIR (0-3) + computed NDVI
             "optical": {
-                "mean": np.array(full_stats["channel_means"][:4]),  # R,G,B,NIR
-                "std": np.array(full_stats["channel_stds"][:4]),
+                "mean": np.array(full_stats["channel_means"][:4] + [0]), # Add 0 for NDVI mean
+                "std": np.array(full_stats["channel_stds"][:4] + [1]),   # Add 1 for NDVI std
             },
             # SAR channels: VV_desc, VH_desc, VV_asc, VH_asc (4-7) + diff channels (8-11)
             "sar": {

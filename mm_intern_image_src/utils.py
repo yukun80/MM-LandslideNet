@@ -29,7 +29,7 @@ class FocalLoss(nn.Module):
     Reference: Lin, T. Y., et al. "Focal loss for dense object detection." ICCV 2017.
     """
 
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean"):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean", pos_weight: Optional[torch.Tensor] = None):
         """
         Initialize Focal Loss.
 
@@ -37,11 +37,13 @@ class FocalLoss(nn.Module):
             alpha: Weighting factor for rare class (default: 0.25)
             gamma: Focusing parameter (default: 2.0)
             reduction: Reduction method ('mean', 'sum', 'none')
+            pos_weight: A weight of positive examples. If provided, this will be used as the 'pos_weight' argument in BCEWithLogitsLoss.
         """
         super(FocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
+        self.pos_weight = pos_weight
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -62,7 +64,7 @@ class FocalLoss(nn.Module):
         p = torch.sigmoid(inputs)
 
         # Calculate cross entropy
-        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none", pos_weight=self.pos_weight)
 
         # Calculate p_t
         p_t = p * targets + (1 - p) * (1 - targets)
@@ -157,6 +159,7 @@ class CombinedLoss(nn.Module):
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         dice_smooth: float = 1.0,
+        pos_weight: Optional[torch.Tensor] = None,
     ):
         """
         Initialize Combined Loss.
@@ -167,12 +170,13 @@ class CombinedLoss(nn.Module):
             focal_alpha: Alpha parameter for focal loss
             focal_gamma: Gamma parameter for focal loss
             dice_smooth: Smoothing parameter for dice loss
+            pos_weight: A weight of positive examples for Focal Loss.
         """
         super(CombinedLoss, self).__init__()
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
 
-        self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+        self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma, pos_weight=pos_weight)
         self.dice_loss = DiceLoss(smooth=dice_smooth)
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> Dict[str, torch.Tensor]:
