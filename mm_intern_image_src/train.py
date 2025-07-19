@@ -1,5 +1,11 @@
 """
-Complete training script for MM-InternImage-TNF model.
+Modified Training Script for MM-TNF Model
+
+Key Changes:
+1. Adapted for dual-branch TNF model input format
+2. Updated forward pass: model(optical_data, sar_data)
+3. Multi-branch loss computation (optical + sar + fusion)
+4. Updated metrics calculation for ensemble predictions
 """
 
 import torch
@@ -30,7 +36,7 @@ logger = logging.getLogger(__name__)
 try:
     from .config import config
     from .dataset import MultiModalLandslideDataset, get_augmentations, load_exclude_ids
-    from .models import create_optical_dominated_model
+    from .models import create_tnf_model
     from .utils import (
         CombinedLoss,
         calculate_metrics,
@@ -45,7 +51,7 @@ except ImportError:
     # Fallback for direct execution
     from config import config
     from dataset import MultiModalLandslideDataset, get_augmentations, load_exclude_ids
-    from models import create_optical_dominated_model
+    from models import create_tnf_model
     from utils import (
         CombinedLoss,
         calculate_metrics,
@@ -75,148 +81,155 @@ def train_one_epoch(
     epoch: int,
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
 ) -> Dict[str, float]:
-    """Train model for one epoch."""
+    """Train TNF model for one epoch."""
     model.train()
-    running_loss = 0.0
-    total_focal_loss = 0.0
-    total_dice_loss = 0.0
+
+    # Metrics tracking
+    total_loss = 0.0
+    branch_losses = {"optical": 0.0, "sar": 0.0, "fusion": 0.0}
     all_predictions = []
-    all_labels = []
+    all_targets = []
 
-    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.NUM_EPOCHS} [Train]", leave=False)
+    # Progress bar
+    pbar = tqdm(dataloader, desc=f"Training Epoch {epoch}")
 
-    for batch_idx, batch in enumerate(progress_bar):
-        # Move batch to device
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-        labels = batch["label"]
+    for batch_idx, batch in enumerate(pbar):
+        # Extract data and move to device
+        optical_data = batch["optical"].to(device)  # (B, 5, 64, 64)
+        sar_data = batch["sar"].to(device)  # (B, 8, 64, 64)
+        targets = batch["label"].to(device).unsqueeze(1)  # (B, 1)
 
+        # Zero gradients
         optimizer.zero_grad()
 
-        # Forward pass with mixed precision if enabled
+        # Forward pass with mixed precision
         if config.MIXED_PRECISION and scaler is not None:
             with torch.cuda.amp.autocast():
-                logits = model(batch)
-                loss_dict = criterion(logits.squeeze(), labels)
-                total_loss = loss_dict["total_loss"]
+                # TNF model forward pass
+                outputs = model(optical_data, sar_data)
 
-            # Backward pass
-            scaler.scale(total_loss).backward()
+                # Multi-branch loss computation
+                loss_dict = model.compute_loss(outputs, targets, criterion)
+                loss = loss_dict["total_loss"]
+        else:
+            # Regular forward pass
+            outputs = model(optical_data, sar_data)
+            loss_dict = model.compute_loss(outputs, targets, criterion)
+            loss = loss_dict["total_loss"]
+
+        # Backward pass
+        if config.MIXED_PRECISION and scaler is not None:
+            scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRADIENT_CLIP_VAL)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIP_VAL)
             scaler.step(optimizer)
             scaler.update()
         else:
-            logits = model(batch)
-            loss_dict = criterion(logits.squeeze(), labels)
-            total_loss = loss_dict["total_loss"]
-
-            # Backward pass
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRADIENT_CLIP_VAL)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIP_VAL)
             optimizer.step()
 
-        # Accumulate losses
-        running_loss += total_loss.item()
-        total_focal_loss += loss_dict["focal_loss"].item()
-        total_dice_loss += loss_dict["dice_loss"].item()
+        # Update metrics
+        total_loss += loss.item()
+        for branch, branch_loss in loss_dict.items():
+            if branch != "total_loss" and branch in branch_losses:
+                branch_losses[branch] += branch_loss.item()
 
-        # Collect predictions and labels
-        predictions = torch.sigmoid(logits.squeeze()).detach().cpu().numpy()
-        all_predictions.extend(predictions)
-        all_labels.extend(labels.cpu().numpy())
-
-        # Update progress bar
-        progress_bar.set_postfix(
-            {
-                "Loss": f"{total_loss.item():.4f}",
-                "Focal": f'{loss_dict["focal_loss"].item():.4f}',
-                "Dice": f'{loss_dict["dice_loss"].item():.4f}',
-            }
-        )
-
-    # Calculate epoch metrics
-    epoch_loss = running_loss / len(dataloader)
-    epoch_focal_loss = total_focal_loss / len(dataloader)
-    epoch_dice_loss = total_dice_loss / len(dataloader)
-
-    # Calculate classification metrics
-    all_predictions = np.array(all_predictions)
-    all_labels = np.array(all_labels)
-    metrics = calculate_metrics(all_predictions, all_labels)
-
-    return {"loss": epoch_loss, "focal_loss": epoch_focal_loss, "dice_loss": epoch_dice_loss, **metrics}
-
-
-@torch.no_grad()
-def validate_one_epoch(
-    model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device, epoch: int
-) -> Dict[str, float]:
-    """Validate model for one epoch."""
-    model.eval()
-    running_loss = 0.0
-    total_focal_loss = 0.0
-    total_dice_loss = 0.0
-    all_predictions = []
-    all_labels = []
-
-    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.NUM_EPOCHS} [Val]", leave=False)
-
-    for batch in progress_bar:
-        # Move batch to device
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-        labels = batch["label"]
-
-        # Forward pass
-        if config.MIXED_PRECISION:
-            with torch.cuda.amp.autocast():
-                logits = model(batch)
-                loss_dict = criterion(logits.squeeze(), labels)
-                total_loss = loss_dict["total_loss"]
-        else:
-            logits = model(batch)
-            loss_dict = criterion(logits.squeeze(), labels)
-            total_loss = loss_dict["total_loss"]
-
-        # Accumulate losses
-        running_loss += total_loss.item()
-        total_focal_loss += loss_dict["focal_loss"].item()
-        total_dice_loss += loss_dict["dice_loss"].item()
-
-        # Collect predictions and labels
-        predictions = torch.sigmoid(logits.squeeze()).detach().cpu().numpy()
-        all_predictions.extend(predictions)
-        all_labels.extend(labels.cpu().numpy())
+        # Collect predictions for metrics (use ensemble prediction)
+        with torch.no_grad():
+            final_probs = torch.sigmoid(outputs["final_logits"])
+            all_predictions.extend(final_probs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
 
         # Update progress bar
-        progress_bar.set_postfix(
-            {
-                "Val Loss": f"{total_loss.item():.4f}",
-                "Val Focal": f'{loss_dict["focal_loss"].item():.4f}',
-                "Val Dice": f'{loss_dict["dice_loss"].item():.4f}',
-            }
-        )
+        pbar.set_postfix({"Loss": f"{loss.item():.4f}", "Avg": f"{total_loss/(batch_idx+1):.4f}"})
 
     # Calculate epoch metrics
-    epoch_loss = running_loss / len(dataloader)
-    epoch_focal_loss = total_focal_loss / len(dataloader)
-    epoch_dice_loss = total_dice_loss / len(dataloader)
+    avg_loss = total_loss / len(dataloader)
+    avg_branch_losses = {k: v / len(dataloader) for k, v in branch_losses.items()}
 
-    # Calculate classification metrics
-    all_predictions = np.array(all_predictions)
-    all_labels = np.array(all_labels)
-    metrics = calculate_metrics(all_predictions, all_labels)
+    # Calculate training metrics
+    train_metrics = calculate_metrics(np.array(all_targets), np.array(all_predictions), threshold=0.5)
 
     return {
-        "val_loss": epoch_loss,
-        "val_focal_loss": epoch_focal_loss,
-        "val_dice_loss": epoch_dice_loss,
-        **{f"val_{k}": v for k, v in metrics.items()},
+        "loss": avg_loss,
+        "optical_loss": avg_branch_losses["optical"],
+        "sar_loss": avg_branch_losses["sar"],
+        "fusion_loss": avg_branch_losses["fusion"],
+        **train_metrics,
+    }
+
+
+def validate_one_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    epoch: int,
+) -> Dict[str, float]:
+    """Validate TNF model for one epoch."""
+    model.eval()
+
+    # Metrics tracking
+    total_loss = 0.0
+    branch_losses = {"optical": 0.0, "sar": 0.0, "fusion": 0.0}
+    all_predictions = []
+    all_targets = []
+
+    # Progress bar
+    pbar = tqdm(dataloader, desc=f"Validation Epoch {epoch}")
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(pbar):
+            # Extract data and move to device
+            optical_data = batch["optical"].to(device)
+            sar_data = batch["sar"].to(device)
+            targets = batch["label"].to(device).unsqueeze(1)
+
+            # Forward pass
+            if config.MIXED_PRECISION:
+                with torch.cuda.amp.autocast():
+                    outputs = model(optical_data, sar_data)
+                    loss_dict = model.compute_loss(outputs, targets, criterion)
+                    loss = loss_dict["total_loss"]
+            else:
+                outputs = model(optical_data, sar_data)
+                loss_dict = model.compute_loss(outputs, targets, criterion)
+                loss = loss_dict["total_loss"]
+
+            # Update metrics
+            total_loss += loss.item()
+            for branch, branch_loss in loss_dict.items():
+                if branch != "total_loss" and branch in branch_losses:
+                    branch_losses[branch] += branch_loss.item()
+
+            # Collect predictions (use ensemble prediction)
+            final_probs = torch.sigmoid(outputs["final_logits"])
+            all_predictions.extend(final_probs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+
+            # Update progress bar
+            pbar.set_postfix({"Loss": f"{loss.item():.4f}", "Avg": f"{total_loss/(batch_idx+1):.4f}"})
+
+    # Calculate epoch metrics
+    avg_loss = total_loss / len(dataloader)
+    avg_branch_losses = {k: v / len(dataloader) for k, v in branch_losses.items()}
+
+    # Calculate validation metrics
+    val_metrics = calculate_metrics(np.array(all_targets), np.array(all_predictions), threshold=0.5)
+
+    return {
+        "loss": avg_loss,
+        "optical_loss": avg_branch_losses["optical"],
+        "sar_loss": avg_branch_losses["sar"],
+        "fusion_loss": avg_branch_losses["fusion"],
+        **val_metrics,
     }
 
 
 def setup_training(resume_path: Optional[str] = None) -> Dict[str, Any]:
-    """Setup training components."""
-    logger.info("🚀 Setting up training components...")
+    """Setup all training components for TNF model."""
+    logger.info("🚀 Setting up TNF training components...")
 
     # Set random seed
     seed_everything(config.RANDOM_SEED)
@@ -286,9 +299,16 @@ def setup_training(resume_path: Optional[str] = None) -> Dict[str, Any]:
         pin_memory=config.PIN_MEMORY,
     )
 
-    # Create model
-    logger.info("🏗️ Creating model...")
-    model = create_optical_dominated_model(num_classes=config.NUM_CLASSES, pretrained=config.MODEL_CONFIG["pretrained"])
+    # Create TNF model
+    logger.info("🏗️ Creating TNF model...")
+    model = create_tnf_model(
+        pretrained=config.MODEL_CONFIG.get("pretrained", True),
+        optical_channels=5,
+        sar_channels=8,
+        optical_feature_dim=512,
+        sar_feature_dim=512,
+        fusion_dim=512,
+    )
     model = model.to(device)
 
     # Setup loss function
@@ -336,9 +356,9 @@ def setup_training(resume_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def run_training(args: Optional[argparse.Namespace] = None):
-    """Main training function."""
+    """Main training function for TNF model."""
     logger.info("=" * 80)
-    logger.info("🚀 Starting MM-InternImage-TNF Training")
+    logger.info("🚀 Starting MM-TNF Training")
     logger.info("=" * 80)
 
     # Setup training
@@ -370,6 +390,12 @@ def run_training(args: Optional[argparse.Namespace] = None):
         "val_precision": [],
         "train_recall": [],
         "val_recall": [],
+        "train_optical_loss": [],
+        "train_sar_loss": [],
+        "train_fusion_loss": [],
+        "val_optical_loss": [],
+        "val_sar_loss": [],
+        "val_fusion_loss": [],
         "lr": [],
     }
 
@@ -386,94 +412,94 @@ def run_training(args: Optional[argparse.Namespace] = None):
             # Validation phase
             val_metrics = validate_one_epoch(model, val_loader, criterion, device, epoch)
 
-            # Step scheduler
+            # Update learning rate
             scheduler.step()
+            current_lr = scheduler.get_last_lr()[0]
 
-            # Combine metrics
-            combined_metrics = {**train_metrics, **val_metrics}
-            combined_metrics["lr"] = optimizer.param_groups[0]["lr"]
-            combined_metrics["epoch"] = epoch
+            # Log metrics
+            logger.info(f"\nEpoch {epoch}/{config.NUM_EPOCHS-1}")
+            logger.info(f"Train - {format_metrics(train_metrics)}")
+            logger.info(f"Val   - {format_metrics(val_metrics)}")
+            logger.info(
+                f"Branch Losses - Train: O:{train_metrics['optical_loss']:.4f} S:{train_metrics['sar_loss']:.4f} F:{train_metrics['fusion_loss']:.4f}"
+            )
+            logger.info(
+                f"Branch Losses - Val:   O:{val_metrics['optical_loss']:.4f} S:{val_metrics['sar_loss']:.4f} F:{val_metrics['fusion_loss']:.4f}"
+            )
+            logger.info(f"LR: {current_lr:.2e}, Time: {time.time() - epoch_start_time:.1f}s")
 
             # Update history
-            for key in history:
-                if key in combined_metrics:
-                    history[key].append(combined_metrics[key])
-                elif f"train_{key}" in combined_metrics:
-                    history[key].append(combined_metrics[f"train_{key}"])
-
-            # Print epoch summary
-            epoch_time = time.time() - epoch_start_time
-            logger.info(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS} ({epoch_time:.1f}s)")
-            logger.info(format_metrics(combined_metrics))
+            for key in history.keys():
+                if key == "lr":
+                    history[key].append(current_lr)
+                elif key.startswith("train_"):
+                    metric_name = key[6:]  # Remove 'train_' prefix
+                    history[key].append(train_metrics.get(metric_name, 0.0))
+                elif key.startswith("val_"):
+                    metric_name = key[4:]  # Remove 'val_' prefix
+                    history[key].append(val_metrics.get(metric_name, 0.0))
 
             # Check if this is the best model
-            current_metric = combined_metrics[config.MONITOR_METRIC]
+            current_metric = val_metrics[config.MONITOR_METRIC]
             is_best = current_metric > best_metric
             if is_best:
                 best_metric = current_metric
-                logger.info(f"🎉 New best {config.MONITOR_METRIC}: {best_metric:.4f}")
+                logger.info(f"🎉 New best model! {config.MONITOR_METRIC}: {best_metric:.4f}")
 
             # Save checkpoint
-            save_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                epoch=epoch,
-                metrics=combined_metrics,
-                config_dict=config.to_dict(),
-                filepath=config.get_latest_model_path(),
-                is_best=is_best,
-                best_model_path=config.get_best_model_path(),
-            )
+            checkpoint = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_metric": best_metric,
+                "train_metrics": train_metrics,
+                "val_metrics": val_metrics,
+                "history": history,
+                "config": config.to_dict(),
+            }
 
-            # Save periodic checkpoint
-            if (epoch + 1) % config.SAVE_EVERY_N_EPOCHS == 0:
-                save_checkpoint(
-                    model=model,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    epoch=epoch,
-                    metrics=combined_metrics,
-                    config_dict=config.to_dict(),
-                    filepath=config.get_epoch_model_path(epoch),
-                )
+            # Save regular checkpoint
+            checkpoint_path = save_checkpoint(checkpoint, config.CHECKPOINT_DIR, is_best)
+            logger.info(f"💾 Checkpoint saved: {checkpoint_path}")
 
             # Early stopping check
             early_stopping(current_metric)
-            if early_stopping.should_stop:
-                logger.info(f"🛑 Early stopping triggered after {epoch+1} epochs")
+            if early_stopping.early_stop:
+                logger.info("⏰ Early stopping triggered")
                 break
 
     except KeyboardInterrupt:
-        logger.info("❌ Training interrupted by user")
+        logger.info("⚠️ Training interrupted by user")
     except Exception as e:
-        logger.error(f"❌ Training failed with error: {str(e)}")
+        logger.error(f"❌ Training failed: {e}")
         raise
+    finally:
+        total_time = time.time() - training_start_time
+        logger.info(f"🏁 Training completed in {total_time:.1f}s")
+        logger.info(f"📊 Best {config.MONITOR_METRIC}: {best_metric:.4f}")
 
-    # Training completed
-    total_time = time.time() - training_start_time
-    logger.info("=" * 80)
-    logger.info(f"🏁 Training completed in {total_time/3600:.2f} hours")
-    logger.info(f"🏆 Best {config.MONITOR_METRIC}: {best_metric:.4f}")
-    logger.info(f"📂 Model saved to: {config.get_best_model_path()}")
-    logger.info(f"📊 Logs saved to: {config.LOG_DIR}")
-    logger.info("=" * 80)
-
-    # Save training history
-    history_path = config.LOG_DIR / "training_history.json"
-    with open(history_path, "w") as f:
-        json.dump(history, f, indent=2)
-    logger.info(f"📈 Training history saved to: {history_path}")
+        # Save final history
+        history_path = config.LOG_DIR / "training_history.json"
+        with open(history_path, "w") as f:
+            json.dump(history, f, indent=2)
+        logger.info(f"📈 Training history saved: {history_path}")
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train MM-InternImage-TNF model")
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
-    parser.add_argument("--config", type=str, default=None, help="Path to custom config file (optional)")
-    return parser.parse_args()
+def main():
+    """Main entry point for training script."""
+    parser = argparse.ArgumentParser(description="Train MM-TNF model for landslide detection")
+    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("Debug mode enabled")
+
+    run_training(args)
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
-    run_training(args)
+    main()

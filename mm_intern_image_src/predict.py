@@ -1,465 +1,471 @@
 """
-Batch Prediction Script for MM-InternImage-TNF Model
+Modified Prediction Script for MM-TNF Model
 
-This script performs batch prediction on test data and generates submission files.
-Supports Test Time Augmentation (TTA) for improved performance.
+Key Changes:
+1. Adapted for dual-branch TNF model inference
+2. Updated data loading format (optical + sar)
+3. Enhanced ensemble prediction with branch weights
+4. Test-Time Augmentation (TTA) support for TNF model
 """
 
 import torch
-import torch.nn.functional as F
-import numpy as np
+import torch.nn as nn
 import pandas as pd
-import argparse
+from torch.utils.data import DataLoader
+import numpy as np
 from pathlib import Path
-import json
-import time
-from typing import Dict, List, Tuple, Optional
-from tqdm import tqdm
 import logging
+from typing import Dict, List, Optional, Union
+import argparse
+from tqdm import tqdm
+import json
+from datetime import datetime
 
-"""
-python -m mm_intern_image_src.predict \
-    --model_path outputs/checkpoints/OpticalDominatedCooperativeModel_20250718_165907/best_model.pth \
-    --test_data_dir dataset/test_data \
-    --output_dir outputs/submissions \
-    --submission_name submission_internimage_tta_18072025_165907.csv \
-    --threshold 0.6 \
-    --use_tta \
-    --save_probabilities --device cuda
-"""
+# Set up logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # Import project modules
 try:
     from .config import config
-    from .models import create_optical_dominated_model
-    from .dataset import get_tta_augmentations, get_augmentations
-    from .utils import load_checkpoint, setup_logging
+    from .dataset import MultiModalLandslideDataset, get_tta_augmentations
+    from .models import create_tnf_model
+    from .utils import load_checkpoint, seed_everything
 except ImportError:
     # Fallback for direct execution
     from config import config
-    from models import create_optical_dominated_model
-    from dataset import get_tta_augmentations, get_augmentations
-    from utils import load_checkpoint, setup_logging
-
-# Setup logger
-logger = logging.getLogger(__name__)
+    from dataset import MultiModalLandslideDataset, get_tta_augmentations
+    from models import create_tnf_model
+    from utils import load_checkpoint, seed_everything
 
 
-class BatchPredictor:
-    """Batch predictor for test data."""
+class TNFPredictor:
+    """
+    Prediction class for TNF landslide detection model.
 
-    def __init__(self, model_path: Path, device: str = "auto"):
+    Supports:
+    - Standard inference
+    - Test-Time Augmentation (TTA)
+    - Ensemble predictions from multiple branches
+    - Uncertainty estimation
+    """
+
+    def __init__(
+        self,
+        model_path: Union[str, Path],
+        device: Optional[str] = None,
+        use_tta: bool = True,
+        tta_confidence_threshold: float = 0.9,
+    ):
         """
-        Initialize the batch predictor.
+        Initialize TNF predictor.
 
         Args:
             model_path: Path to trained model checkpoint
-            device: Device to use ('cuda', 'cpu', or 'auto')
+            device: Device to run inference on
+            use_tta: Whether to use Test-Time Augmentation
+            tta_confidence_threshold: Threshold for TTA consensus
         """
-        self.model_path = model_path
-        self.device = self._setup_device(device)
-        self.model = None
-        self.stats = None
+        self.model_path = Path(model_path)
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.use_tta = use_tta
+        self.tta_confidence_threshold = tta_confidence_threshold
 
-        # Load model and statistics
-        self._load_model()
-        self._load_stats()
+        # Load model
+        self.model = self._load_model()
+        logger.info(f"TNF Predictor initialized on {self.device}")
 
-        logger.info(f"BatchPredictor initialized on {self.device}")
-
-    def _setup_device(self, device: str) -> str:
-        """Setup computation device."""
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        return device
-
-    def _load_model(self):
-        """Load trained model from checkpoint."""
+    def _load_model(self) -> nn.Module:
+        """Load trained TNF model from checkpoint."""
         logger.info(f"Loading model from {self.model_path}")
 
         # Create model
-        self.model = create_optical_dominated_model(num_classes=config.NUM_CLASSES, pretrained=False)
-        self.model.to(self.device)
+        model = create_tnf_model(
+            pretrained=False,  # We're loading trained weights
+            optical_channels=5,
+            sar_channels=8,
+            optical_feature_dim=512,
+            sar_feature_dim=512,
+            fusion_dim=512,
+        )
 
         # Load checkpoint
-        checkpoint = load_checkpoint(self.model_path, self.model)
+        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
-        # Set to evaluation mode
-        self.model.eval()
+        # Handle different checkpoint formats
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            logger.info(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+            logger.info(f"Best metric: {checkpoint.get('best_metric', 'unknown')}")
+        else:
+            model.load_state_dict(checkpoint)
+            logger.info("Loaded model state dict directly")
 
-        logger.info("Model loaded successfully")
+        model = model.to(self.device)
+        model.eval()
 
-        # Log model info
-        total_params = sum(p.numel() for p in self.model.parameters())
-        logger.info(f"Model parameters: {total_params:,}")
+        return model
 
-        # Get training metrics from checkpoint
-        if "metrics" in checkpoint:
-            metrics = checkpoint["metrics"]
-            if "val_f1_score" in metrics:
-                logger.info(f"Model validation F1-score: {metrics['val_f1_score']:.4f}")
+    def predict_batch(self, optical_data: torch.Tensor, sar_data: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Predict on a batch of data.
 
-    def _load_stats(self):
-        """Load normalization statistics."""
-        logger.info(f"Loading statistics from {config.STATS_FILE_PATH}")
+        Args:
+            optical_data: Optical tensor (B, 5, 64, 64)
+            sar_data: SAR tensor (B, 8, 64, 64)
 
-        with open(config.STATS_FILE_PATH, "r") as f:
-            full_stats = json.load(f)
+        Returns:
+            Dictionary with predictions and intermediate outputs
+        """
+        with torch.no_grad():
+            # Standard prediction
+            outputs = self.model(optical_data, sar_data)
 
-        # Extract statistics (same as in dataset.py)
-        try:
-            self.stats = {
-                "optical": {
-                    "mean": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_0"]["mean"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_1"]["mean"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_2"]["mean"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_3"]["mean"],
-                            0.0,  # NDVI mean
-                        ]
-                    ),
-                    "std": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_0"]["std"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_1"]["std"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_2"]["std"],
-                            full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_3"]["std"],
-                            1.0,  # NDVI std
-                        ]
-                    ),
-                },
-                "sar": {
-                    "mean": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_4"][
-                                "mean"
-                            ],
-                            full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_5"][
-                                "mean"
-                            ],
-                            full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_8"]["mean"],
-                            full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_9"]["mean"],
-                        ]
-                    ),
-                    "std": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_4"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_5"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_8"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_9"]["std"],
-                        ]
-                    ),
-                },
-                "sar_change": {
-                    "mean": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_6"]["mean"],
-                            full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_7"]["mean"],
-                            full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_10"]["mean"],
-                            full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_11"]["mean"],
-                        ]
-                    ),
-                    "std": np.array(
-                        [
-                            full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_6"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_7"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_10"]["std"],
-                            full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_11"]["std"],
-                        ]
-                    ),
-                },
+            # Convert logits to probabilities
+            predictions = {
+                "optical_probs": torch.sigmoid(outputs["optical_logits"]),
+                "sar_probs": torch.sigmoid(outputs["sar_logits"]),
+                "fusion_probs": torch.sigmoid(outputs["fusion_logits"]),
+                "final_probs": torch.sigmoid(outputs["final_logits"]),
+                "fusion_weights": outputs["fusion_weights"],
             }
-            logger.info("Statistics loaded successfully")
-        except KeyError as e:
-            logger.error(f"Failed to load statistics: {e}")
-            raise
 
-    def _preprocess_image(self, image_path: Path) -> Dict[str, torch.Tensor]:
+            return predictions
+
+    def predict_with_tta(self, optical_data: torch.Tensor, sar_data: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Preprocess a single image for prediction.
+        Predict with Test-Time Augmentation.
 
         Args:
-            image_path: Path to .npy image file
+            optical_data: Optical tensor (B, 5, 64, 64)
+            sar_data: SAR tensor (B, 8, 64, 64)
 
         Returns:
-            Dictionary with preprocessed tensors
+            Dictionary with TTA predictions and uncertainty measures
         """
-        # Load data
-        data = np.load(image_path).astype(np.float32)
-        if data.shape != (64, 64, 12):
-            raise ValueError(f"Expected shape (64, 64, 12), got {data.shape}")
+        tta_transforms = get_tta_augmentations()
+        batch_size = optical_data.size(0)
 
-        # Split modalities (same as dataset.py)
-        optical = data[:, :, :4]  # R, G, B, NIR
-        sar = np.concatenate([data[:, :, 4:6], data[:, :, 8:10]], axis=-1)  # VV, VH desc+asc
-        sar_change = np.concatenate([data[:, :, 6:8], data[:, :, 10:12]], axis=-1)  # diff channels
-
-        # Compute NDVI
-        red, nir = optical[:, :, 0], optical[:, :, 3]
-        ndvi = np.clip((nir - red) / (nir + red + 1e-8), -1, 1)
-        optical_with_ndvi = np.concatenate([optical, ndvi[:, :, np.newaxis]], axis=-1)
-
-        # Normalize each modality
-        optical_norm = (optical_with_ndvi - self.stats["optical"]["mean"]) / self.stats["optical"]["std"]
-        sar_norm = (sar - self.stats["sar"]["mean"]) / self.stats["sar"]["std"]
-        sar_change_norm = (sar_change - self.stats["sar_change"]["mean"]) / self.stats["sar_change"]["std"]
-
-        # Convert to tensors (HWC -> CHW format)
-        return {
-            "optical": torch.from_numpy(optical_norm.transpose(2, 0, 1)).float().unsqueeze(0),
-            "sar": torch.from_numpy(sar_norm.transpose(2, 0, 1)).float().unsqueeze(0),
-            "sar_change": torch.from_numpy(sar_change_norm.transpose(2, 0, 1)).float().unsqueeze(0),
-        }
-
-    def _predict_single(self, tensors: Dict[str, torch.Tensor]) -> Tuple[float, float]:
-        """
-        Predict a single sample.
-
-        Args:
-            tensors: Preprocessed tensor dictionary
-
-        Returns:
-            Tuple of (probability, logit)
-        """
-        # Move tensors to device
-        batch = {k: v.to(self.device) for k, v in tensors.items()}
+        # Collect predictions from all TTA transforms
+        all_predictions = {"optical": [], "sar": [], "fusion": [], "final": []}
 
         with torch.no_grad():
-            logits = self.model(batch)
-            probability = torch.sigmoid(logits).item()
+            for transform in tta_transforms:
+                # Apply transform to batch
+                augmented_optical = []
+                augmented_sar = []
 
-        return probability, logits.item()
+                for i in range(batch_size):
+                    # Convert to numpy for albumentations
+                    opt_np = optical_data[i].permute(1, 2, 0).cpu().numpy()
+                    sar_np = sar_data[i].permute(1, 2, 0).cpu().numpy()
 
-    def _predict_with_tta(self, image_path: Path, tta_transforms: List) -> float:
+                    # Apply transform
+                    augmented = transform(image=opt_np, sar=sar_np)
+
+                    augmented_optical.append(augmented["image"])
+                    augmented_sar.append(augmented["sar"])
+
+                # Stack back to tensors
+                aug_optical = torch.stack(augmented_optical).to(self.device)
+                aug_sar = torch.stack(augmented_sar).to(self.device)
+
+                # Get predictions
+                outputs = self.model(aug_optical, aug_sar)
+
+                # Store probabilities
+                all_predictions["optical"].append(torch.sigmoid(outputs["optical_logits"]))
+                all_predictions["sar"].append(torch.sigmoid(outputs["sar_logits"]))
+                all_predictions["fusion"].append(torch.sigmoid(outputs["fusion_logits"]))
+                all_predictions["final"].append(torch.sigmoid(outputs["final_logits"]))
+
+        # Aggregate TTA predictions
+        tta_results = {}
+        for branch, predictions in all_predictions.items():
+            stacked_preds = torch.stack(predictions, dim=0)  # (num_tta, batch_size, 1)
+
+            # Mean prediction
+            mean_pred = stacked_preds.mean(dim=0)
+
+            # Uncertainty (standard deviation)
+            std_pred = stacked_preds.std(dim=0)
+
+            tta_results[f"{branch}_mean"] = mean_pred
+            tta_results[f"{branch}_std"] = std_pred
+            tta_results[f"{branch}_confidence"] = 1.0 - std_pred  # Higher std = lower confidence
+
+        return tta_results
+
+    def predict_dataset(self, dataloader: DataLoader, use_tta: Optional[bool] = None) -> Dict[str, np.ndarray]:
         """
-        Predict with Test Time Augmentation.
+        Predict on entire dataset.
 
         Args:
-            image_path: Path to image file
-            tta_transforms: List of TTA transforms
+            dataloader: DataLoader for prediction dataset
+            use_tta: Override TTA setting for this prediction
 
         Returns:
-            Average probability across all TTA predictions
+            Dictionary with all predictions and metadata
         """
-        probabilities = []
+        use_tta = use_tta if use_tta is not None else self.use_tta
 
-        # Load and preprocess original image
-        base_tensors = self._preprocess_image(image_path)
+        results = {
+            "ids": [],
+            "optical_probs": [],
+            "sar_probs": [],
+            "fusion_probs": [],
+            "final_probs": [],
+        }
 
-        # For each TTA transform
-        for transform in tta_transforms:
-            # Note: For simplicity, we'll apply TTA on the original preprocessed tensors
-            # In a more sophisticated implementation, you'd apply transforms before preprocessing
-            prob, _ = self._predict_single(base_tensors)
-            probabilities.append(prob)
-
-        # Return average probability
-        return np.mean(probabilities)
-
-    def predict_batch(self, test_data_dir: Path, use_tta: bool = True, batch_size: int = 1) -> Dict[str, float]:
-        """
-        Predict all images in test directory.
-
-        Args:
-            test_data_dir: Directory containing test .npy files
-            use_tta: Whether to use Test Time Augmentation
-            batch_size: Batch size (currently only supports 1)
-
-        Returns:
-            Dictionary mapping image IDs to probabilities
-        """
-        logger.info(f"Starting batch prediction on {test_data_dir}")
-        logger.info(f"TTA enabled: {use_tta}")
-
-        # Get all test files
-        test_files = list(test_data_dir.glob("*.npy"))
-        logger.info(f"Found {len(test_files)} test files")
-
-        if len(test_files) == 0:
-            raise ValueError(f"No .npy files found in {test_data_dir}")
-
-        # Setup TTA if requested
-        tta_transforms = None
         if use_tta:
-            try:
-                tta_transforms = get_tta_augmentations()
-                logger.info(f"TTA enabled with {len(tta_transforms)} transforms")
-            except Exception as e:
-                logger.warning(f"TTA setup failed: {e}. Falling back to single prediction.")
-                use_tta = False
+            results.update({"final_std": [], "final_confidence": [], "high_confidence_mask": []})
 
-        # Predict each file
-        predictions = {}
+        logger.info(f"Starting prediction with TTA={use_tta}")
 
-        for file_path in tqdm(test_files, desc="Predicting"):
-            image_id = file_path.stem
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Predicting"):
+                # Extract data
+                optical_data = batch["optical"].to(self.device)
+                sar_data = batch["sar"].to(self.device)
+                sample_ids = batch["id"]
 
-            try:
-                if use_tta and tta_transforms:
-                    probability = self._predict_with_tta(file_path, tta_transforms)
+                if use_tta:
+                    # TTA prediction
+                    predictions = self.predict_with_tta(optical_data, sar_data)
+
+                    # Store TTA results
+                    results["final_probs"].extend(predictions["final_mean"].cpu().numpy())
+                    results["final_std"].extend(predictions["final_std"].cpu().numpy())
+                    results["final_confidence"].extend(predictions["final_confidence"].cpu().numpy())
+
+                    # High confidence mask
+                    high_conf = predictions["final_confidence"] > self.tta_confidence_threshold
+                    results["high_confidence_mask"].extend(high_conf.cpu().numpy())
+
+                    # Also store branch predictions (use mean)
+                    results["optical_probs"].extend(predictions["optical_mean"].cpu().numpy())
+                    results["sar_probs"].extend(predictions["sar_mean"].cpu().numpy())
+                    results["fusion_probs"].extend(predictions["fusion_mean"].cpu().numpy())
+
                 else:
-                    tensors = self._preprocess_image(file_path)
-                    probability, _ = self._predict_single(tensors)
+                    # Standard prediction
+                    predictions = self.predict_batch(optical_data, sar_data)
 
-                predictions[image_id] = probability
+                    # Store results
+                    results["optical_probs"].extend(predictions["optical_probs"].cpu().numpy())
+                    results["sar_probs"].extend(predictions["sar_probs"].cpu().numpy())
+                    results["fusion_probs"].extend(predictions["fusion_probs"].cpu().numpy())
+                    results["final_probs"].extend(predictions["final_probs"].cpu().numpy())
 
-            except Exception as e:
-                logger.error(f"Failed to predict {image_id}: {e}")
-                # Use default probability for failed predictions
-                predictions[image_id] = 0.5
+                # Store IDs
+                results["ids"].extend(sample_ids)
 
-        logger.info(f"Batch prediction completed. Processed {len(predictions)} images")
-        return predictions
+        # Convert lists to numpy arrays
+        for key, values in results.items():
+            if key != "ids":
+                results[key] = np.array(values)
+
+        logger.info(f"Prediction completed. {len(results['ids'])} samples processed.")
+
+        return results
 
     def create_submission(
-        self, predictions: Dict[str, float], output_path: Path, threshold: float = 0.5
+        self, predictions: Dict[str, np.ndarray], threshold: float = 0.5, use_branch: str = "final"
     ) -> pd.DataFrame:
         """
         Create submission file from predictions.
 
         Args:
-            predictions: Dictionary mapping image IDs to probabilities
-            output_path: Path to save submission CSV
+            predictions: Prediction results dictionary
             threshold: Classification threshold
+            use_branch: Which branch to use ("optical", "sar", "fusion", "final")
 
         Returns:
             Submission DataFrame
         """
-        logger.info(f"Creating submission file with threshold {threshold}")
+        prob_key = f"{use_branch}_probs"
 
-        # Create submission data
-        submission_data = []
-        for image_id, probability in predictions.items():
-            prediction = 1 if probability >= threshold else 0
-            submission_data.append({"ID": image_id, "label": prediction})
+        if prob_key not in predictions:
+            raise ValueError(f"Prediction branch '{use_branch}' not found in results")
 
-        # Create DataFrame and sort by ID
-        submission_df = pd.DataFrame(submission_data)
-        submission_df = submission_df.sort_values("ID").reset_index(drop=True)
+        # Apply threshold to get binary predictions
+        binary_preds = (predictions[prob_key].squeeze() > threshold).astype(int)
 
-        # Save to CSV
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        submission_df.to_csv(output_path, index=False)
+        # Create submission DataFrame
+        submission_df = pd.DataFrame({"ID": predictions["ids"], "label": binary_preds})
 
-        # Log statistics
-        positive_count = (submission_df["label"] == 1).sum()
-        total_count = len(submission_df)
-        logger.info(f"Submission statistics:")
-        logger.info(f"  Total samples: {total_count}")
-        logger.info(f"  Predicted landslides: {positive_count} ({positive_count/total_count*100:.1f}%)")
-        logger.info(
-            f"  Predicted non-landslides: {total_count-positive_count} ({(total_count-positive_count)/total_count*100:.1f}%)"
-        )
-        logger.info(f"Submission saved to: {output_path}")
+        logger.info(f"Submission created using {use_branch} branch with threshold {threshold}")
+        logger.info(f"Prediction distribution: {np.bincount(binary_preds)}")
 
         return submission_df
 
-    def save_probabilities(self, predictions: Dict[str, float], output_path: Path):
+    def save_detailed_results(self, predictions: Dict[str, np.ndarray], output_path: Union[str, Path]) -> None:
         """
-        Save raw probabilities for analysis.
+        Save detailed prediction results.
 
         Args:
-            predictions: Dictionary mapping image IDs to probabilities
-            output_path: Path to save probabilities CSV
+            predictions: Prediction results dictionary
+            output_path: Path to save results
         """
-        prob_data = []
-        for image_id, probability in predictions.items():
-            prob_data.append({"ID": image_id, "probability": probability})
+        output_path = Path(output_path)
 
-        prob_df = pd.DataFrame(prob_data)
-        prob_df = prob_df.sort_values("ID").reset_index(drop=True)
+        # Create detailed results DataFrame
+        detailed_df = pd.DataFrame(
+            {
+                "ID": predictions["ids"],
+                "optical_prob": predictions["optical_probs"].squeeze(),
+                "sar_prob": predictions["sar_probs"].squeeze(),
+                "fusion_prob": predictions["fusion_probs"].squeeze(),
+                "final_prob": predictions["final_probs"].squeeze(),
+            }
+        )
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        prob_df.to_csv(output_path, index=False)
+        # Add TTA results if available
+        if "final_std" in predictions:
+            detailed_df["final_std"] = predictions["final_std"].squeeze()
+            detailed_df["final_confidence"] = predictions["final_confidence"].squeeze()
+            detailed_df["high_confidence"] = predictions["high_confidence_mask"].squeeze()
 
-        logger.info(f"Probabilities saved to: {output_path}")
+        # Save to CSV
+        detailed_df.to_csv(output_path, index=False)
+        logger.info(f"Detailed results saved to {output_path}")
+
+
+def create_test_dataset() -> MultiModalLandslideDataset:
+    """Create test dataset for prediction."""
+    test_csv = config.DATA_DIR / "Test.csv"
+    test_data_dir = config.TEST_DATA_DIR
+
+    if not test_csv.exists():
+        raise FileNotFoundError(f"Test CSV not found: {test_csv}")
+    if not test_data_dir.exists():
+        raise FileNotFoundError(f"Test data directory not found: {test_data_dir}")
+
+    # Load test DataFrame
+    test_df = pd.read_csv(test_csv)
+
+    # Create test dataset (no augmentations for test)
+    test_dataset = MultiModalLandslideDataset(
+        df=test_df,
+        data_dir=test_data_dir,
+        exclude_ids=[],  # No exclusions for test set
+        augmentations=None,  # No augmentations for clean prediction
+        mode="test",
+    )
+
+    return test_dataset
+
+
+def run_prediction(
+    model_path: Union[str, Path],
+    output_dir: Union[str, Path],
+    batch_size: int = 32,
+    use_tta: bool = True,
+    threshold: float = 0.5,
+    use_branch: str = "final",
+) -> None:
+    """
+    Run complete prediction pipeline.
+
+    Args:
+        model_path: Path to trained model checkpoint
+        output_dir: Directory to save results
+        batch_size: Batch size for inference
+        use_tta: Whether to use Test-Time Augmentation
+        threshold: Classification threshold
+        use_branch: Which branch to use for submission
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Set random seed for reproducibility
+    seed_everything(config.RANDOM_SEED)
+
+    # Create predictor
+    predictor = TNFPredictor(model_path=model_path, use_tta=use_tta)
+
+    # Create test dataset and dataloader
+    test_dataset = create_test_dataset()
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=config.NUM_WORKERS, pin_memory=config.PIN_MEMORY
+    )
+
+    logger.info(f"Test dataset size: {len(test_dataset)}")
+
+    # Run prediction
+    predictions = predictor.predict_dataset(test_loader, use_tta=use_tta)
+
+    # Create submission
+    submission_df = predictor.create_submission(predictions, threshold=threshold, use_branch=use_branch)
+
+    # Save results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save submission file
+    submission_path = output_dir / f"tnf_submission_{use_branch}_{timestamp}.csv"
+    submission_df.to_csv(submission_path, index=False)
+    logger.info(f"Submission saved: {submission_path}")
+
+    # Save detailed results
+    detailed_path = output_dir / f"tnf_detailed_results_{timestamp}.csv"
+    predictor.save_detailed_results(predictions, detailed_path)
+
+    # Save prediction metadata
+    metadata = {
+        "model_path": str(model_path),
+        "use_tta": use_tta,
+        "threshold": threshold,
+        "use_branch": use_branch,
+        "num_samples": len(predictions["ids"]),
+        "timestamp": timestamp,
+        "prediction_summary": {
+            "positive_predictions": int(submission_df["label"].sum()),
+            "negative_predictions": int((submission_df["label"] == 0).sum()),
+            "positive_rate": float(submission_df["label"].mean()),
+        },
+    }
+
+    if use_tta:
+        metadata["tta_summary"] = {
+            "mean_confidence": float(predictions["final_confidence"].mean()),
+            "high_confidence_samples": int(predictions["high_confidence_mask"].sum()),
+            "high_confidence_rate": float(predictions["high_confidence_mask"].mean()),
+        }
+
+    metadata_path = output_dir / f"tnf_prediction_metadata_{timestamp}.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info(f"Prediction metadata saved: {metadata_path}")
+    logger.info("🎉 Prediction pipeline completed successfully!")
 
 
 def main():
-    """Main function for batch prediction."""
-    parser = argparse.ArgumentParser(description="Batch prediction for MM-InternImage-TNF")
-
-    parser.add_argument("--model_path", type=str, required=True, help="Path to trained model checkpoint (.pth file)")
+    """Main entry point for prediction script."""
+    parser = argparse.ArgumentParser(description="Run TNF model prediction")
+    parser.add_argument("--model", type=str, required=True, help="Path to trained model checkpoint")
+    parser.add_argument("--output", type=str, default="outputs/predictions", help="Output directory")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for inference")
+    parser.add_argument("--no-tta", action="store_true", help="Disable Test-Time Augmentation")
+    parser.add_argument("--threshold", type=float, default=0.5, help="Classification threshold")
     parser.add_argument(
-        "--test_data_dir", type=str, default="dataset/test_data", help="Directory containing test .npy files"
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default="outputs/submissions", help="Directory to save submission files"
-    )
-    parser.add_argument(
-        "--submission_name", type=str, default=None, help="Name for submission file (auto-generated if not provided)"
-    )
-    parser.add_argument("--threshold", type=float, default=0.5, help="Classification threshold (default: 0.5)")
-    parser.add_argument("--use_tta", action="store_true", help="Use Test Time Augmentation")
-    parser.add_argument("--save_probabilities", action="store_true", help="Save raw probabilities to CSV")
-    parser.add_argument(
-        "--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Device to use for prediction"
+        "--branch",
+        type=str,
+        default="final",
+        choices=["optical", "sar", "fusion", "final"],
+        help="Which branch to use for submission",
     )
 
     args = parser.parse_args()
 
-    # Setup logging
-    setup_logging(log_level="INFO")
-
-    logger.info("=" * 80)
-    logger.info("🚀 MM-InternImage-TNF Batch Prediction")
-    logger.info("=" * 80)
-
-    # Validate inputs
-    model_path = Path(args.model_path)
-    test_data_dir = Path(args.test_data_dir)
-    output_dir = Path(args.output_dir)
-
-    if not model_path.exists():
-        logger.error(f"Model file not found: {model_path}")
-        return
-
-    if not test_data_dir.exists():
-        logger.error(f"Test data directory not found: {test_data_dir}")
-        return
-
-    # Generate submission filename if not provided
-    if args.submission_name is None:
-        timestamp = int(time.time())
-        tta_suffix = "_tta" if args.use_tta else ""
-        args.submission_name = f"submission_internimage{tta_suffix}_{timestamp}.csv"
-
-    try:
-        # Initialize predictor
-        predictor = BatchPredictor(model_path, device=args.device)
-
-        # Run batch prediction
-        start_time = time.time()
-        predictions = predictor.predict_batch(test_data_dir=test_data_dir, use_tta=args.use_tta)
-        prediction_time = time.time() - start_time
-
-        # Create submission file
-        submission_path = output_dir / args.submission_name
-        submission_df = predictor.create_submission(
-            predictions=predictions, output_path=submission_path, threshold=args.threshold
-        )
-
-        # Save probabilities if requested
-        if args.save_probabilities:
-            prob_name = args.submission_name.replace(".csv", "_probabilities.csv")
-            prob_path = output_dir / prob_name
-            predictor.save_probabilities(predictions, prob_path)
-
-        # Final summary
-        logger.info("=" * 80)
-        logger.info("🎉 Batch Prediction Completed Successfully!")
-        logger.info(f"⏱️ Total time: {prediction_time:.1f} seconds")
-        logger.info(f"⚡ Speed: {len(predictions)/prediction_time:.1f} images/second")
-        logger.info(f"📄 Submission file: {submission_path}")
-        logger.info(f"📊 Samples processed: {len(predictions)}")
-        logger.info("=" * 80)
-
-        return {"predictions": predictions, "submission_path": submission_path, "submission_df": submission_df}
-
-    except Exception as e:
-        logger.error(f"Batch prediction failed: {e}")
-        raise
+    run_prediction(
+        model_path=args.model,
+        output_dir=args.output,
+        batch_size=args.batch_size,
+        use_tta=not args.no_tta,
+        threshold=args.threshold,
+        use_branch=args.branch,
+    )
 
 
 if __name__ == "__main__":

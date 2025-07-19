@@ -1,9 +1,11 @@
 """
-Multi-Modal Landslide Dataset Module
+Modified Multi-Modal Landslide Dataset Module for TNF Model
 
-This module implements the data loading and preprocessing pipeline for the
-MM-InternImage-TNF model. It handles 12-channel remote sensing data with
-independent normalization for each modality.
+Key Changes:
+1. Adapted data format for dual-branch TNF model
+2. Optical: 5 channels (R,G,B,NIR,NDVI)
+3. SAR: 8 channels (4 original + 4 difference channels combined)
+4. Simplified data flow without separate sar_change branch
 """
 
 import json
@@ -18,23 +20,18 @@ from albumentations.pytorch import ToTensorV2
 import cv2
 
 try:
-    # Try relative import first (when imported as part of package)
     from .config import config
 except ImportError:
-    # Fall back to absolute import (when run directly)
     from config import config
 
 
 class MultiModalLandslideDataset(Dataset):
     """
-    Multi-modal dataset for landslide detection combining Sentinel-1 SAR and Sentinel-2 optical data.
+    Multi-modal dataset for TNF landslide detection model.
 
-    The dataset handles 12-channel input data and splits it into three modalities:
-    - Optical: 5 channels (R, G, B, NIR, NDVI)
-    - SAR: 4 channels (VV_desc, VH_desc, VV_asc, VH_asc)
-    - SAR_diff: 4 channels (VV_desc_diff, VH_desc_diff, VV_asc_diff, VH_asc_diff)
-
-    Each modality is normalized independently using pre-computed statistics.
+    Data Flow:
+    - Input: 12-channel data from .npy files
+    - Output: optical (5ch) + sar (8ch) for dual-branch TNF model
     """
 
     def __init__(
@@ -47,7 +44,7 @@ class MultiModalLandslideDataset(Dataset):
         mode: str = "train",
     ):
         """
-        Initialize the dataset.
+        Initialize the TNF-compatible dataset.
 
         Args:
             df: DataFrame containing ID and label columns
@@ -72,7 +69,7 @@ class MultiModalLandslideDataset(Dataset):
             stats_dict = self._load_stats()
         self.stats = self._extract_normalization_stats(stats_dict)
 
-        print(f"Dataset initialized: {len(self.df)} samples in {mode} mode")
+        print(f"TNF Dataset initialized: {len(self.df)} samples in {mode} mode")
 
     def _load_stats(self) -> Dict:
         """Load channel statistics from JSON file"""
@@ -81,284 +78,206 @@ class MultiModalLandslideDataset(Dataset):
 
     def _extract_normalization_stats(self, full_stats: Dict) -> Dict:
         """
-        Extract statistics for three-branch normalization.
-
-        Args:
-            full_stats: Complete statistics dictionary from JSON file
+        Extract statistics for dual-branch normalization.
 
         Returns:
-            Dictionary with normalization statistics for each modality
+            Dict with normalization stats for optical and sar modalities
         """
-        try:
-            # Extract statistics for optical modality (channels 0-3, plus computed NDVI)
-            optical_stats = {
-                "mean": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_0"]["mean"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_1"]["mean"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_2"]["mean"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_3"]["mean"],
-                        0.0,  # NDVI mean will be computed dynamically
-                    ]
-                ),
-                "std": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_0"]["std"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_1"]["std"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_2"]["std"],
-                        full_stats["channel_statistics_by_group"]["optical"]["channels"]["channel_3"]["std"],
-                        1.0,  # NDVI std will be computed dynamically
-                    ]
-                ),
-            }
+        return {
+            # Optical channels: R, G, B, NIR (0-3) + computed NDVI
+            "optical": {
+                "mean": np.array(full_stats["channel_means"][:4]),  # R,G,B,NIR
+                "std": np.array(full_stats["channel_stds"][:4]),
+            },
+            # SAR channels: VV_desc, VH_desc, VV_asc, VH_asc (4-7) + diff channels (8-11)
+            "sar": {
+                "mean": np.array(full_stats["channel_means"][4:]),  # All SAR channels
+                "std": np.array(full_stats["channel_stds"][4:]),
+            },
+        }
 
-            # Extract statistics for SAR modality (channels 4-5, 8-9)
-            sar_stats = {
-                "mean": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_4"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_5"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_8"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_9"]["mean"],
-                    ]
-                ),
-                "std": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_4"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_descending"]["channels"]["channel_5"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_8"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_ascending"]["channels"]["channel_9"]["std"],
-                    ]
-                ),
-            }
-
-            # Extract statistics for SAR change modality (channels 6-7, 10-11)
-            sar_change_stats = {
-                "mean": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_6"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_7"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_10"]["mean"],
-                        full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_11"]["mean"],
-                    ]
-                ),
-                "std": np.array(
-                    [
-                        full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_6"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_desc_diff"]["channels"]["channel_7"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_10"]["std"],
-                        full_stats["channel_statistics_by_group"]["sar_asc_diff"]["channels"]["channel_11"]["std"],
-                    ]
-                ),
-            }
-
-            return {"optical": optical_stats, "sar": sar_stats, "sar_change": sar_change_stats}
-
-        except KeyError as e:
-            print(f"Warning: Could not extract statistics for key {e}")
-            # Return default statistics if extraction fails
-            return {
-                "optical": {"mean": np.zeros(5), "std": np.ones(5)},
-                "sar": {"mean": np.zeros(4), "std": np.ones(4)},
-                "sar_change": {"mean": np.zeros(4), "std": np.ones(4)},
-            }
-
-    def _split_modalities(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Split 12-channel data into three modalities.
-
-        Args:
-            data: Input data of shape (64, 64, 12)
-
-        Returns:
-            Tuple of (optical, sar, sar_change) arrays
-        """
-        # Optical: channels 0-3 (R, G, B, NIR)
-        optical = data[:, :, :4]
-
-        # SAR: channels 4-5 (desc) and 8-9 (asc)
-        sar = np.concatenate([data[:, :, 4:6], data[:, :, 8:10]], axis=-1)
-
-        # SAR change: channels 6-7 (desc diff) and 10-11 (asc diff)
-        sar_change = np.concatenate([data[:, :, 6:8], data[:, :, 10:12]], axis=-1)
-
-        return optical, sar, sar_change
-
-    def _compute_ndvi(self, optical_data: np.ndarray) -> np.ndarray:
-        """
-        Compute NDVI from optical data.
-
-        Args:
-            optical_data: Optical data with shape (64, 64, 4) - R, G, B, NIR
-
-        Returns:
-            NDVI array with shape (64, 64)
-        """
-        red = optical_data[:, :, 0]
-        nir = optical_data[:, :, 3]
-
-        # Compute NDVI with epsilon to avoid division by zero
-        ndvi = (nir - red) / (nir + red + 1e-8)
-
-        # Clip to valid NDVI range
-        ndvi = np.clip(ndvi, -1, 1)
-
-        return ndvi
+    def _compute_ndvi(self, nir: np.ndarray, red: np.ndarray) -> np.ndarray:
+        """Compute NDVI from NIR and Red channels"""
+        epsilon = 1e-8
+        ndvi = (nir - red) / (nir + red + epsilon)
+        return np.clip(ndvi, -1, 1)
 
     def _normalize_modality(self, data: np.ndarray, modality: str) -> np.ndarray:
-        """
-        Normalize data for a specific modality.
-
-        Args:
-            data: Input data array
-            modality: 'optical', 'sar', or 'sar_change'
-
-        Returns:
-            Normalized data array
-        """
+        """Normalize data using modality-specific statistics"""
         stats = self.stats[modality]
-        normalized = (data - stats["mean"]) / stats["std"]
-        return normalized.astype(np.float32)
+        return (data - stats["mean"]) / (stats["std"] + 1e-8)
 
-    def _apply_augmentations(self, **data_dict) -> Dict[str, torch.Tensor]:
+    def _prepare_optical_data(self, data: np.ndarray) -> np.ndarray:
         """
-        Apply augmentations to the data.
+        Prepare 5-channel optical data: R, G, B, NIR, NDVI
 
         Args:
-            **data_dict: Dictionary containing 'image', 'sar', 'sar_change' arrays
+            data: Full 12-channel data array (H, W, 12)
 
         Returns:
-            Dictionary with augmented tensors
+            optical_data: (H, W, 5) array
         """
-        if self.augmentations is not None:
-            augmented = self.augmentations(**data_dict)
-            return {"image": augmented["image"], "sar": augmented["sar"], "sar_change": augmented["sar_change"]}
-        else:
-            # Convert to tensors without augmentations
-            return {
-                "image": torch.from_numpy(data_dict["image"].transpose(2, 0, 1)),
-                "sar": torch.from_numpy(data_dict["sar"].transpose(2, 0, 1)),
-                "sar_change": torch.from_numpy(data_dict["sar_change"].transpose(2, 0, 1)),
-            }
+        # Extract optical channels (R, G, B, NIR)
+        optical = data[:, :, :4]  # Channels 0-3
+
+        # Compute NDVI
+        red = data[:, :, 0]
+        nir = data[:, :, 3]
+        ndvi = self._compute_ndvi(nir, red)
+
+        # Stack all optical channels
+        optical_with_ndvi = np.concatenate([optical, ndvi[..., np.newaxis]], axis=2)  # Add NDVI as 5th channel
+
+        # Normalize optical data
+        optical_normalized = self._normalize_modality(optical_with_ndvi, "optical")
+
+        return optical_normalized.astype(np.float32)
+
+    def _prepare_sar_data(self, data: np.ndarray) -> np.ndarray:
+        """
+        Prepare 8-channel SAR data: 4 original + 4 difference channels
+
+        Args:
+            data: Full 12-channel data array (H, W, 12)
+
+        Returns:
+            sar_data: (H, W, 8) array
+        """
+        # Extract SAR channels (original: 4-7, difference: 8-11)
+        sar_original = data[:, :, 4:8]  # VV_desc, VH_desc, VV_asc, VH_asc
+        sar_diff = data[:, :, 8:12]  # Difference channels
+
+        # Combine all SAR channels
+        sar_combined = np.concatenate([sar_original, sar_diff], axis=2)
+
+        # Normalize SAR data
+        sar_normalized = self._normalize_modality(sar_combined, "sar")
+
+        return sar_normalized.astype(np.float32)
 
     def __len__(self) -> int:
         return len(self.df)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
-        Get a sample from the dataset.
-
-        Args:
-            idx: Sample index
+        Get a single sample for TNF model.
 
         Returns:
-            Dictionary containing tensors for each modality and label
+            Dict containing:
+                - optical: (5, 64, 64) tensor
+                - sar: (8, 64, 64) tensor
+                - label: scalar tensor (for training)
+                - id: sample ID string
         """
         # Get sample info
-        sample = self.df.iloc[idx]
-        sample_id = sample["ID"]
-        label = sample["label"]
+        row = self.df.iloc[idx]
+        sample_id = row["ID"]
 
-        # Load 12-channel data
+        # Load data
         data_path = self.data_dir / f"{sample_id}.npy"
         try:
             data = np.load(data_path)  # Shape: (64, 64, 12)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Data file not found: {data_path}")
+        except Exception as e:
+            print(f"Error loading {data_path}: {e}")
+            # Return dummy data to prevent training crash
+            data = np.zeros((64, 64, 12), dtype=np.float32)
 
-        # Split into three modalities
-        optical, sar, sar_change = self._split_modalities(data)
+        # Prepare modality-specific data
+        optical_data = self._prepare_optical_data(data)  # (64, 64, 5)
+        sar_data = self._prepare_sar_data(data)  # (64, 64, 8)
 
-        # Compute NDVI and add to optical data
-        ndvi = self._compute_ndvi(optical)
-        optical_with_ndvi = np.concatenate([optical, ndvi[:, :, np.newaxis]], axis=-1)
+        # Apply augmentations if provided
+        if self.augmentations is not None:
+            # Albumentations expects HWC format
+            augmented = self.augmentations(image=optical_data, sar=sar_data)
+            optical_data = augmented["image"]  # Now CHW tensor
+            sar_data = augmented["sar"]  # Now CHW tensor
+        else:
+            # Convert to CHW tensors manually
+            optical_data = torch.from_numpy(optical_data).permute(2, 0, 1)
+            sar_data = torch.from_numpy(sar_data).permute(2, 0, 1)
 
-        # Apply independent normalization
-        optical_norm = self._normalize_modality(optical_with_ndvi, "optical")
-        sar_norm = self._normalize_modality(sar, "sar")
-        sar_change_norm = self._normalize_modality(sar_change, "sar_change")
+        # Prepare return dictionary
+        sample = {"optical": optical_data, "sar": sar_data, "id": sample_id}  # (5, 64, 64)  # (8, 64, 64)
 
-        # Prepare data for augmentation
-        data_dict = {"image": optical_norm, "sar": sar_norm, "sar_change": sar_change_norm}
+        # Add label for training/validation
+        if self.mode != "test" and "label" in row:
+            sample["label"] = torch.tensor(row["label"], dtype=torch.float32)
 
-        # Apply augmentations and convert to tensors
-        augmented = self._apply_augmentations(**data_dict)
-
-        return {
-            "optical": augmented["image"],
-            "sar": augmented["sar"],
-            "sar_change": augmented["sar_change"],
-            "label": torch.tensor(label, dtype=torch.float32),
-            "id": sample_id,
-        }
+        return sample
 
 
-def get_augmentations(mode: str = "train") -> Optional[A.Compose]:
+def get_augmentations(mode: str) -> A.Compose:
     """
-    Get augmentation pipeline for three-branch architecture.
+    Get augmentation pipeline for TNF model.
 
     Args:
-        mode: 'train', 'val', or 'test'
+        mode: 'train' or 'val'
 
     Returns:
-        Albumentations composition pipeline
+        Albumentations composition with dual-modality support
     """
+    aug_config = config.AUGMENTATION_CONFIG
+
     if mode == "train":
-        augmentations = [
-            # 基础几何变换
-            A.HorizontalFlip(p=config.AUGMENTATION_CONFIG["horizontal_flip_prob"]),
-            A.VerticalFlip(p=config.AUGMENTATION_CONFIG["vertical_flip_prob"]),
-            A.Rotate(limit=config.AUGMENTATION_CONFIG["rotation_limit"], p=0.6, border_mode=cv2.BORDER_REFLECT_101),
-            # 修复：移除无效的mode参数
-            A.Affine(scale=(0.9, 1.1), translate_percent=(-0.1, 0.1), p=0.5),  # 10% scale variation  # 10% translation
-            # 光学增强
-            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3),
-            # 使用GaussianBlur代替有问题的GaussNoise
-            A.GaussianBlur(blur_limit=(3, 7), p=0.2),
-            # 转换为tensor
-            ToTensorV2(),
+        transforms = [
+            A.HorizontalFlip(p=aug_config["horizontal_flip_prob"]),
+            A.VerticalFlip(p=aug_config["vertical_flip_prob"]),
+            A.Rotate(limit=aug_config["rotation_limit"], p=0.5, border_mode=cv2.BORDER_REFLECT),
+            A.ShiftScaleRotate(
+                shift_limit=aug_config["shift_limit"],
+                scale_limit=aug_config["scale_limit"],
+                rotate_limit=0,  # Already handled by A.Rotate
+                p=0.3,
+                border_mode=cv2.BORDER_REFLECT,
+            ),
         ]
 
-        return A.Compose(augmentations, additional_targets={"sar": "image", "sar_change": "image"})
+        # Add advanced augmentations if enabled
+        if aug_config.get("apply_advanced", False):
+            transforms.extend(
+                [
+                    A.RandomBrightnessContrast(
+                        brightness_limit=aug_config["brightness_limit"],
+                        contrast_limit=aug_config["contrast_limit"],
+                        p=0.3,
+                    ),
+                    A.GaussianBlur(blur_limit=aug_config["blur_limit"], p=0.2),
+                    A.GaussNoise(var_limit=aug_config["noise_var_limit"], per_channel=True, p=0.2),
+                ]
+            )
 
-    else:
-        # 验证和测试只做基本转换
-        return A.Compose([ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"})
+    else:  # validation
+        transforms = []
+
+    # Add tensor conversion (always last)
+    transforms.append(ToTensorV2())
+
+    return A.Compose(transforms, additional_targets={"sar": "image"})  # Tell albumentations that 'sar' is also an image
 
 
 def get_tta_augmentations() -> List[A.Compose]:
     """
-    Get Test Time Augmentation (TTA) pipelines.
+    Get Test-Time Augmentation transforms for TNF model.
 
     Returns:
         List of augmentation pipelines for TTA
     """
     tta_transforms = [
         # Original
-        A.Compose([ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"}),
+        A.Compose([ToTensorV2()], additional_targets={"sar": "image"}),
         # Horizontal flip
-        A.Compose([A.HorizontalFlip(p=1.0), ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"}),
+        A.Compose([A.HorizontalFlip(p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
         # Vertical flip
-        A.Compose([A.VerticalFlip(p=1.0), ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"}),
+        A.Compose([A.VerticalFlip(p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
         # Both flips
-        A.Compose(
-            [A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0), ToTensorV2()],
-            additional_targets={"sar": "image", "sar_change": "image"},
-        ),
+        A.Compose([A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
         # Rotation 90°
-        A.Compose(
-            [A.Rotate(limit=(90, 90), p=1.0), ToTensorV2()], additional_targets={"sar": "image", "sar_change": "image"}
-        ),
+        A.Compose([A.Rotate(limit=(90, 90), p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
         # Rotation 180°
-        A.Compose(
-            [A.Rotate(limit=(180, 180), p=1.0), ToTensorV2()],
-            additional_targets={"sar": "image", "sar_change": "image"},
-        ),
+        A.Compose([A.Rotate(limit=(180, 180), p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
         # Rotation 270°
-        A.Compose(
-            [A.Rotate(limit=(270, 270), p=1.0), ToTensorV2()],
-            additional_targets={"sar": "image", "sar_change": "image"},
-        ),
+        A.Compose([A.Rotate(limit=(270, 270), p=1.0), ToTensorV2()], additional_targets={"sar": "image"}),
     ]
 
     return tta_transforms
@@ -379,7 +298,7 @@ def create_datasets(
     train_df: pd.DataFrame, val_df: pd.DataFrame, data_dir: Union[str, Path]
 ) -> Tuple[MultiModalLandslideDataset, MultiModalLandslideDataset]:
     """
-    Create training and validation datasets.
+    Create training and validation datasets for TNF model.
 
     Args:
         train_df: Training DataFrame (already filtered)
@@ -389,7 +308,6 @@ def create_datasets(
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
-    # Create datasets (data already filtered, so no exclude_ids needed)
     train_dataset = MultiModalLandslideDataset(
         df=train_df, data_dir=data_dir, exclude_ids=[], augmentations=get_augmentations("train"), mode="train"
     )
@@ -401,7 +319,7 @@ def create_datasets(
     return train_dataset, val_dataset
 
 
-# Add validation for augmentation parameters
+# Validation function for augmentation config
 def validate_augmentation_config():
     """Validate augmentation configuration parameters."""
     aug_config = config.AUGMENTATION_CONFIG
@@ -421,7 +339,7 @@ def validate_augmentation_config():
     if not 0 <= aug_config["scale_limit"] <= 1:
         raise ValueError(f"scale_limit must be between 0 and 1, got {aug_config['scale_limit']}")
 
-    print("✅ Augmentation configuration validated successfully")
+    print("✅ Augmentation configuration validated for TNF model")
 
 
 # Call validation when module is imported
