@@ -29,7 +29,13 @@ class FocalLoss(nn.Module):
     Reference: Lin, T. Y., et al. "Focal loss for dense object detection." ICCV 2017.
     """
 
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean", pos_weight: Optional[torch.Tensor] = None):
+    def __init__(
+        self,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+        reduction: str = "mean",
+        pos_weight: Optional[torch.Tensor] = None,
+    ):
         """
         Initialize Focal Loss.
 
@@ -51,14 +57,20 @@ class FocalLoss(nn.Module):
 
         Args:
             inputs: Predicted logits [N, 1] or [N]
-            targets: Ground truth labels [N] (0 or 1)
+            targets: Ground truth labels [N, 1] or [N] (0 or 1)
 
         Returns:
             Focal loss value
         """
-        # Ensure inputs are properly shaped
+        # FIXED: Ensure both inputs and targets are properly shaped and consistent
         if inputs.dim() == 2 and inputs.size(1) == 1:
-            inputs = inputs.squeeze(1)
+            inputs = inputs.squeeze(1)  # (B, 1) -> (B,)
+
+        if targets.dim() == 2 and targets.size(1) == 1:
+            targets = targets.squeeze(1)  # (B, 1) -> (B,)
+
+        # Ensure targets are float type
+        targets = targets.float()
 
         # Apply sigmoid to get probabilities
         p = torch.sigmoid(inputs)

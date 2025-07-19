@@ -149,7 +149,7 @@ def train_one_epoch(
     avg_branch_losses = {k: v / len(dataloader) for k, v in branch_losses.items()}
 
     # Calculate training metrics
-    train_metrics = calculate_metrics(np.array(all_targets), np.array(all_predictions), threshold=0.5)
+    train_metrics = calculate_metrics(np.array(all_predictions), np.array(all_targets), threshold=0.5)
 
     return {
         "loss": avg_loss,
@@ -216,7 +216,7 @@ def validate_one_epoch(
     avg_branch_losses = {k: v / len(dataloader) for k, v in branch_losses.items()}
 
     # Calculate validation metrics
-    val_metrics = calculate_metrics(np.array(all_targets), np.array(all_predictions), threshold=0.5)
+    val_metrics = calculate_metrics(np.array(all_predictions), np.array(all_targets), threshold=0.5)
 
     return {
         "loss": avg_loss,
