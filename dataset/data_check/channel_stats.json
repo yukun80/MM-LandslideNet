@@ -1,0 +1,299 @@
+{
+  "dataset_info": {
+    "original_image_count": 7147,
+    "excluded_image_count": 858,
+    "clean_image_count": 6289,
+    "processed_image_count": 6289,
+    "retention_rate": 0.8799496292150553,
+    "exclusion_threshold": 66.95764439219482,
+    "exclusion_method": "rgb_optical_channels_only_15th_percentile",
+    "exclusion_metric": "rgb_std_mean",
+    "filtering_approach": "RGB_optical_channels_only"
+  },
+  "class_distribution": {
+    "original": {
+      "class_0": 5892,
+      "class_1": 1255
+    },
+    "clean": {
+      "class_0": 5034,
+      "class_1": 1255
+    }
+  },
+  "channel_statistics_by_group": {
+    "optical": {
+      "name": "Sentinel-2 Optical",
+      "description": "Red, Green, Blue, Near-Infrared",
+      "channels": {
+        "channel_0": {
+          "channel_index": 0,
+          "name": "Red (Sentinel-2)",
+          "mean": 1849.2820327717543,
+          "std": 1414.4620215983996,
+          "min": 0.0,
+          "max": 20944.0,
+          "median": 1435.0,
+          "q25": 1174.0,
+          "q75": 1886.0,
+          "pixel_count": 25759744
+        },
+        "channel_1": {
+          "channel_index": 1,
+          "name": "Green (Sentinel-2)",
+          "mean": 1953.9066007410634,
+          "std": 1338.2922070231732,
+          "min": 0.0,
+          "max": 19744.0,
+          "median": 1616.0,
+          "q25": 1360.0,
+          "q75": 1907.0,
+          "pixel_count": 25759744
+        },
+        "channel_2": {
+          "channel_index": 2,
+          "name": "Blue (Sentinel-2)",
+          "mean": 1896.4935633677105,
+          "std": 1342.5279228152033,
+          "min": 0.0,
+          "max": 18816.0,
+          "median": 1514.0,
+          "q25": 1309.0,
+          "q75": 1852.0,
+          "pixel_count": 25759744
+        },
+        "channel_3": {
+          "channel_index": 3,
+          "name": "Near Infrared (Sentinel-2)",
+          "mean": 3291.4698145292127,
+          "std": 1448.361785922746,
+          "min": 0.0,
+          "max": 17600.0,
+          "median": 3144.0,
+          "q25": 2310.0,
+          "q75": 3985.0,
+          "pixel_count": 25759744
+        }
+      }
+    },
+    "sar_descending": {
+      "name": "SAR Descending",
+      "description": "VV, VH descending pass",
+      "channels": {
+        "channel_4": {
+          "channel_index": 4,
+          "name": "Descending VV (Sentinel-1)",
+          "mean": -9.623968259876714,
+          "std": 7.904146094741228,
+          "min": -56.998489537691206,
+          "max": 25.324353199704316,
+          "median": -9.467068300464678,
+          "q25": -13.788022881599652,
+          "q75": -4.717320586357321,
+          "pixel_count": 25759744
+        },
+        "channel_5": {
+          "channel_index": 5,
+          "name": "Descending VH (Sentinel-1)",
+          "mean": -17.110362718433816,
+          "std": 9.245555165352387,
+          "min": -63.40209468018378,
+          "max": 16.366712350446836,
+          "median": -15.772973969160681,
+          "q25": -20.368561887125647,
+          "q75": -11.562562946445517,
+          "pixel_count": 25759744
+        }
+      }
+    },
+    "sar_desc_diff": {
+      "name": "SAR Descending Diff",
+      "description": "Differential VV, VH descending",
+      "channels": {
+        "channel_6": {
+          "channel_index": 6,
+          "name": "Descending Diff VV",
+          "mean": -0.6990525095999542,
+          "std": 4.062377781212371,
+          "min": -41.327716547089096,
+          "max": 26.209181253489607,
+          "median": -0.16666439953178136,
+          "q25": -1.8295815704695455,
+          "q75": 1.378516026582905,
+          "pixel_count": 25759744
+        },
+        "channel_7": {
+          "channel_index": 7,
+          "name": "Descending Diff VH",
+          "mean": -0.4832961634969667,
+          "std": 4.282787378330854,
+          "min": -36.69997763095981,
+          "max": 32.632098151770265,
+          "median": -0.03802402141392758,
+          "q25": -1.8319204568168193,
+          "q75": 1.6394830469573676,
+          "pixel_count": 25759744
+        }
+      }
+    },
+    "sar_ascending": {
+      "name": "SAR Ascending",
+      "description": "VV, VH ascending pass",
+      "channels": {
+        "channel_8": {
+          "channel_index": 8,
+          "name": "Ascending VV (Sentinel-1)",
+          "mean": -10.671472781772207,
+          "std": 6.3330209832354845,
+          "min": -58.200051716024,
+          "max": 33.06001123912004,
+          "median": -10.602159557513895,
+          "q25": -15.192130883804923,
+          "q75": -6.6392934837257584,
+          "pixel_count": 25759744
+        },
+        "channel_9": {
+          "channel_index": 9,
+          "name": "Ascending VH (Sentinel-1)",
+          "mean": -18.442730647482204,
+          "std": 8.691191852133215,
+          "min": -61.734112297884124,
+          "max": 23.87546532933314,
+          "median": -16.84437670448821,
+          "q25": -22.12043255474367,
+          "q75": -13.003725224249951,
+          "pixel_count": 25759744
+        }
+      }
+    },
+    "sar_asc_diff": {
+      "name": "SAR Ascending Diff",
+      "description": "Differential VV, VH ascending",
+      "channels": {
+        "channel_10": {
+          "channel_index": 10,
+          "name": "Ascending Diff VV",
+          "mean": 0.24850374058966831,
+          "std": 2.7769616171675384,
+          "min": -35.42869700018937,
+          "max": 34.33027685075517,
+          "median": 0.12889431202215906,
+          "q25": -1.5014746668566301,
+          "q75": 1.820779384212115,
+          "pixel_count": 25759744
+        },
+        "channel_11": {
+          "channel_index": 11,
+          "name": "Ascending Diff VH",
+          "mean": -0.23450036159349075,
+          "std": 3.9329441850154807,
+          "min": -34.07984758508011,
+          "max": 34.41226241875068,
+          "median": -0.07066570445457998,
+          "q25": -1.949371554796655,
+          "q75": 1.712260512543697,
+          "pixel_count": 25759744
+        }
+      }
+    }
+  },
+  "data_specifications": {
+    "image_height": 64,
+    "image_width": 64,
+    "num_channels": 12,
+    "channel_descriptions": [
+      "Red (Sentinel-2)",
+      "Green (Sentinel-2)",
+      "Blue (Sentinel-2)",
+      "Near Infrared (Sentinel-2)",
+      "Descending VV (Sentinel-1)",
+      "Descending VH (Sentinel-1)",
+      "Descending Diff VV",
+      "Descending Diff VH",
+      "Ascending VV (Sentinel-1)",
+      "Ascending VH (Sentinel-1)",
+      "Ascending Diff VV",
+      "Ascending Diff VH"
+    ],
+    "channel_groups": {
+      "optical": {
+        "name": "Sentinel-2 Optical",
+        "description": "Red, Green, Blue, Near-Infrared",
+        "channels": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "sar_descending": {
+        "name": "SAR Descending",
+        "description": "VV, VH descending pass",
+        "channels": [
+          4,
+          5
+        ]
+      },
+      "sar_desc_diff": {
+        "name": "SAR Descending Diff",
+        "description": "Differential VV, VH descending",
+        "channels": [
+          6,
+          7
+        ]
+      },
+      "sar_ascending": {
+        "name": "SAR Ascending",
+        "description": "VV, VH ascending pass",
+        "channels": [
+          8,
+          9
+        ]
+      },
+      "sar_asc_diff": {
+        "name": "SAR Ascending Diff",
+        "description": "Differential VV, VH ascending",
+        "channels": [
+          10,
+          11
+        ]
+      }
+    }
+  },
+  "quality_assessment_info": {
+    "rgb_quality_filtering": true,
+    "rgb_channels_used": [
+      0,
+      1,
+      2
+    ],
+    "sar_channels_excluded_from_quality": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "quality_metrics": [
+      "rgb_std_mean",
+      "rgb_contrast",
+      "rgb_brightness"
+    ],
+    "threshold_percentile": 5.0
+  },
+  "processing_info": {
+    "script_version": "2.0_RGB_filtered",
+    "processing_date": "2025-07-13T08:19:27.222930",
+    "config_file": "configs/config.py"
+  },
+  "class_balance": {
+    "class_0_count": 5034,
+    "class_1_count": 1255,
+    "class_0_percentage": 0.800445221815869,
+    "class_1_percentage": 0.19955477818413103,
+    "imbalance_ratio": 4.011155378486055,
+    "minority_class": 1
+  }
+}

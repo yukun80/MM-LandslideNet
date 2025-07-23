@@ -1,0 +1,82 @@
+# =============================================================================
+# 光学Swin Transformer模型配置
+# =============================================================================
+# 这个配置文件定义了基于Swin Transformer的光学模型的所有参数
+# 通过修改这个文件，您可以轻松地调整模型架构和训练策略
+
+# 基础信息
+model_name: "optical_swin_baseline"
+description: "5-channel optical data classification using Swin Transformer"
+
+# 模型架构配置
+model:
+  type: "optical_swin"                    # 模型类型，对应 LandslideClassificationModule 中的注册表
+  
+  # Swin Transformer骨干网络配置
+  backbone_name: "swin_tiny_patch4_window7_224"  # timm模型名称
+  input_channels: 5                       # 输入通道数：R, G, B, NIR, NDVI
+  pretrained: true                        # 是否使用ImageNet预训练权重
+  
+  # 分类头配置
+  num_classes: 1                          # 二分类任务
+  classifier_type: "simple"               # simple | mlp
+  classifier_hidden_dim: 384              # 仅当classifier_type=mlp时使用
+  dropout_rate: 0.2                       # Dropout比例
+  
+  # 高级配置
+  freeze_backbone: false                  # 是否冻结骨干网络
+  freeze_patch_embed: false               # 是否只冻结patch embedding
+  layer_wise_lr: false                    # 是否使用层次化学习率
+
+# 支持的模型变体
+variants:
+  tiny:
+    backbone_name: "swin_tiny_patch4_window7_224"
+    expected_feature_dim: 768
+    parameters_approx: "28M"
+    
+  small:
+    backbone_name: "swin_small_patch4_window7_224" 
+    expected_feature_dim: 768
+    parameters_approx: "50M"
+    
+  base:
+    backbone_name: "swin_base_patch4_window7_224"
+    expected_feature_dim: 1024
+    parameters_approx: "88M"
+
+# 模型特定的训练建议
+training_recommendations:
+  # 不同GPU内存下的批次大小建议
+  batch_size_recommendations:
+    "RTX 3060 (12GB)": 16
+    "RTX 3080 (10GB)": 24  
+    "RTX 4090 (24GB)": 64
+    "A100 (40GB)": 128
+  
+  # 学习率建议
+  learning_rate_recommendations:
+    base_lr: 1e-4
+    fine_tuning_lr: 5e-5    # 如果使用预训练权重的微调
+    scratch_lr: 2e-4        # 如果从零开始训练
+  
+  # 训练策略建议  
+  training_strategies:
+    warmup_epochs: 5        # 预热轮数
+    cooldown_epochs: 10     # 降温轮数
+    early_stopping_patience: 15
+
+# 性能基准（用于验证模型是否正常工作）
+performance_benchmarks:
+  expected_training_time:
+    "50_epochs_RTX3080": "~1.5 hours"
+    "50_epochs_RTX4090": "~1 hour"
+  
+  expected_performance:
+    validation_f1_min: 0.75      # 最低期望F1分数
+    validation_f1_target: 0.85   # 目标F1分数
+    validation_auc_min: 0.80     # 最低期望AUC
+    
+  memory_usage:
+    model_size_mb: 110           # 模型大小（MB）
+    peak_memory_gb: 4            # 训练时峰值显存（GB）
