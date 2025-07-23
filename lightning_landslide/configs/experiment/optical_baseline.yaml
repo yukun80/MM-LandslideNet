@@ -1,231 +1,296 @@
-
 # =============================================================================
-# configs/experiment/optical_baseline.yaml - 实验配置
+# configs/experiment/optical_baseline.yaml - 光学基线实验配置
 # =============================================================================
 
-# 实验基本信息
-experiment:
-  name: "optical_swin_baseline_v1"
-  description: "Baseline experiment with Swin-T on 5-channel optical data"
-  tags: ["baseline", "optical", "swin", "binary_classification"]
-  
-  # 实验版本控制
-  version: "1.0"
-  author: "your_name"
-  created_date: "2024-01-15"
-  
-# 训练配置
-training:
-  # 基础训练参数
-  max_epochs: 50
-  seed: 42
-  deterministic: true                      # 确保结果可重现
-  
-  # 优化器配置
-  optimizer:
-    type: "adamw"                          # adamw | adam | sgd
-    lr: 1e-4
-    weight_decay: 1e-4
-    beta1: 0.9
-    beta2: 0.999
-    eps: 1e-8
-    
-    # 高级优化选项
-    layer_wise_lr: false                   # 是否使用层次化学习率
-    lr_decay_factor: 0.8                   # 层次化学习率衰减因子
-  
-  # 学习率调度器配置
-  scheduler:
-    type: "cosine"                         # cosine | step | plateau | linear_warmup
-    t_max: 50                              # 对应max_epochs
-    eta_min: 1e-6
-    monitor: "val_f1"                      # 监控指标
-    
-    # 其他调度器参数（根据type选择使用）
-    step_size: 30                          # StepLR使用
-    gamma: 0.1                             # StepLR使用
-    patience: 10                           # ReduceLROnPlateau使用
-    warmup_epochs: 5                       # LinearWarmup使用
-  
-  # 损失函数配置
-  loss:
-    type: "bce"                            # bce | weighted_bce | focal | dice
-    
-    # 加权BCE参数
-    pos_weight: 3.0                        # 正样本权重（当type=weighted_bce时）
-    
-    # Focal Loss参数
-    alpha: 1.0                             # Focal Loss alpha参数
-    gamma: 2.0                             # Focal Loss gamma参数
-    
-    # Dice Loss参数
-    smooth: 1.0                            # Dice Loss平滑参数
+# 这是一个完整的实验配置文件，它将所有的组件组合在一起
+# 这个文件展示了"配置驱动"设计的威力：一个YAML文件定义整个实验
 
-# 回调函数配置
+# === 实验元信息 ===
+# 每个实验都应该有清晰的身份和目标
+experiment_name: "optical_baseline_swin_tiny"
+description: "Optical baseline using Swin Transformer Tiny for landslide detection"
+version: "1.0.0"
+tags: ["optical", "baseline", "swin", "binary_classification"]
+
+# 研究人员信息（便于团队协作）
+author: "MM-LandslideNet Team"
+created_date: "2024-01-15"
+notes: |
+  This experiment serves as the optical baseline for our multi-modal landslide detection project.
+  It uses only optical channels (R,G,B,NIR,NDVI) with a Swin Transformer Tiny backbone.
+  Expected to achieve ~80% F1 score based on preliminary experiments.
+
+# === 全局设置 ===
+seed: 42                    # 随机种子，确保实验可重现
+log_level: "INFO"           # 日志级别：DEBUG/INFO/WARNING/ERROR
+
+# === 模型配置 ===
+# 这里我们引用了之前定义的模型配置，并做了实验特定的调整
+model:
+  target: lightning_landslide.src.models.LandslideClassificationModule
+  params:
+    # 基础模型：Swin Transformer
+    base_model:
+      target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
+      params:
+        model_name: "swin_tiny_patch4_window7_224"
+        input_channels: 5
+        num_classes: 1
+        dropout_rate: 0.2
+        pretrained: true
+        freeze_backbone: false
+    
+    # 损失函数：使用Focal Loss处理类别不平衡
+    loss_config:
+      type: "focal"
+      focal_params:
+        alpha: 1.0
+        gamma: 2.0
+    
+    # 优化器：AdamW with differential learning rates
+    optimizer_config:
+      type: "adamw"
+      adamw_params:
+        lr: 1e-4
+        weight_decay: 1e-4
+        betas: [0.9, 0.999]
+      differential_lr:
+        enable: true
+        backbone_lr_ratio: 0.1
+        classifier_lr_ratio: 1.0
+    
+    # 学习率调度器：预热 + 余弦退火
+    scheduler_config:
+      type: "cosine_with_warmup"
+      cosine_params:
+        warmup_epochs: 5
+        min_lr_ratio: 0.01
+    
+    # 评估指标
+    metrics_config:
+      primary_metric: "f1"
+      metrics: ["accuracy", "precision", "recall", "f1", "auroc"]
+      threshold: 0.5
+
+# === 数据配置 ===
+# 定义数据处理管道
+data:
+  target: lightning_landslide.src.data.MultiModalDataModule
+  params:
+    # 数据路径
+    train_data_dir: "dataset/train_data"
+    test_data_dir: "dataset/test_data"
+    train_csv: "dataset/Train.csv"
+    test_csv: "dataset/Test.csv"
+    exclude_ids_file: "dataset/data_check/exclude_ids.json"
+    
+    # 通道配置：仅使用光学数据
+    channel_config:
+      total_channels: 13
+      channel_groups:
+        optical: [0, 1, 2, 3]
+        derived: ["ndvi"]
+      usage_modes:
+        optical_only:
+          groups: ["optical", "derived"]
+    active_mode: "optical_only"
+    
+    # 数据加载配置
+    batch_size: 64
+    num_workers: 8
+    pin_memory: true
+    
+    # 数据分割
+    val_split: 0.2
+    stratify: true
+    
+    # 数据增强：适度的增强策略
+    augmentation:
+      train:
+        geometric:
+          random_flip: true
+          h_flip_prob: 0.5
+          v_flip_prob: 0.5
+          random_rotation: true
+          rotation_prob: 0.3
+          rotation_degrees: [-10, 10]
+        spectral:
+          spectral_noise: true
+          noise_std: 0.005
+          noise_prob: 0.3
+      val: {}
+      test: {}
+
+# === 训练器配置 ===
+# PyTorch Lightning Trainer的配置
+trainer:
+  target: pytorch_lightning.Trainer
+  params:
+    # 基础训练配置
+    max_epochs: 100
+    accelerator: "auto"         # 自动检测GPU/CPU
+    devices: "auto"             # 自动检测设备数量
+    precision: "16-mixed"       # 使用混合精度训练，节省显存
+    
+    # 验证配置
+    val_check_interval: 1.0     # 每个epoch后验证
+    check_val_every_n_epoch: 1
+    
+    # 梯度配置
+    gradient_clip_val: 1.0
+    accumulate_grad_batches: 1
+    
+    # 性能优化
+    enable_progress_bar: true
+    enable_model_summary: true
+    deterministic: false        # 为了性能，不要求完全确定性
+    
+    # 调试选项（生产环境中可以关闭）
+    fast_dev_run: false         # 快速开发运行，只运行几个batch
+    limit_train_batches: 1.0    # 限制训练batch数量（1.0表示使用全部）
+    limit_val_batches: 1.0      # 限制验证batch数量
+
+# === 回调函数配置 ===
+# 定义训练过程中的监控、保存和控制策略
 callbacks:
-  # 早停回调
-  early_stopping:
-    enable: true
-    monitor: "val_f1"
-    mode: "max"
-    patience: 15
-    min_delta: 1e-4
-    verbose: true
-  
-  # 模型检查点回调
+  # 模型检查点：保存最好的模型
   model_checkpoint:
-    monitor: "val_f1"
-    mode: "max"
-    save_top_k: 3
-    save_last: true
-    filename: "optical_swin-{epoch:02d}-{val_f1:.4f}"
-    auto_insert_metric_name: false
+    target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      dirpath: "outputs/checkpoints/optical_baseline"
+      filename: "best-{epoch:02d}-{val_f1:.4f}"
+      monitor: "val_f1"
+      mode: "max"
+      save_top_k: 3
+      save_last: true
+      auto_insert_metric_name: false
+      verbose: true
   
-  # 学习率监控
+  # 早停：防止过拟合
+  early_stopping:
+    target: pytorch_lightning.callbacks.EarlyStopping
+    params:
+      monitor: "val_f1"
+      mode: "max"
+      patience: 15
+      min_delta: 0.001
+      verbose: true
+      strict: false             # 非严格模式，允许指标偶尔不存在
+  
+  # 学习率监控：追踪学习率变化
   lr_monitor:
-    logging_interval: "epoch"
+    target: pytorch_lightning.callbacks.LearningRateMonitor
+    params:
+      logging_interval: "step"
+      log_momentum: false
+  
+  # 自定义回调：模型统计和可视化
+  metrics_logger:
+    target: lightning_landslide.src.utils.metrics.MetricsLogger
+    params: {}
 
-# 日志和监控配置
-logging:
-  # 基础日志配置
-  log_every_n_steps: 50
-  save_dir: "lightning_logs"
-  name: "optical_experiments"
-  
-  # 外部日志服务（可选）
-  wandb:
-    enable: false                          # 是否启用Weights & Biases
-    project: "landslide_detection"
-    tags: ["optical", "swin", "baseline"]
-    notes: "Baseline experiment with Swin Transformer"
-  
+# === 日志记录器配置 ===
+# 定义实验追踪和可视化方式
+loggers:
+  # TensorBoard：本地可视化
   tensorboard:
-    enable: true                           # 是否启用TensorBoard
-    log_graph: false                       # 是否记录计算图
-    
-# 验证和测试配置
-evaluation:
-  # 验证配置
-  val_check_interval: 1.0                  # 验证频率（1.0表示每个epoch验证一次）
+    target: pytorch_lightning.loggers.TensorBoardLogger
+    params:
+      save_dir: "outputs/logs"
+      name: "optical_baseline"
+      version: null             # 自动生成版本号
+      log_graph: false          # 不记录计算图（节省空间）
+      default_hp_metric: false  # 不记录默认超参数指标
   
-  # 测试配置
-  test_after_training: true                # 训练后是否自动测试
-  
-  # 性能监控
-  monitor_metrics:
-    primary: "val_f1"                      # 主要监控指标
-    secondary: ["val_acc", "val_auroc", "val_precision", "val_recall"]
-    
-  # 性能阈值（用于自动化流程）
-  performance_thresholds:
-    min_val_f1: 0.75                      # 最低可接受的F1分数
-    target_val_f1: 0.85                   # 目标F1分数
-    overfitting_threshold: 0.1             # 训练/验证性能差异阈值
+  # 可选：添加W&B日志记录器（如果需要在线追踪）
+  # wandb:
+  #   target: pytorch_lightning.loggers.WandbLogger
+  #   params:
+  #     project: "mm-landslide-net"
+  #     name: "optical_baseline_swin_tiny"
+  #     tags: ["optical", "baseline", "swin"]
 
-# 硬件和性能配置
-compute:
-  # 硬件配置
-  accelerator: "gpu"                       # gpu | cpu
-  devices: 1                               # GPU数量
-  precision: "16-mixed"                    # 16-mixed | 32 | bf16-mixed
+# === 输出目录配置 ===
+# 定义所有输出文件的保存位置
+outputs:
+  # 核心输出目录
+  checkpoint_dir: "outputs/checkpoints/optical_baseline"
+  log_dir: "outputs/logs/optical_baseline"
+  predictions_dir: "outputs/predictions/optical_baseline"
+  figures_dir: "outputs/figures/optical_baseline"
   
-  # 性能优化
-  gradient_clip_val: 1.0                   # 梯度裁剪
-  accumulate_grad_batches: 1               # 梯度累积
+  # 结果文件命名
+  result_prefix: "optical_baseline"
+  timestamp_format: "%Y%m%d_%H%M%S"
+
+# === 硬件和性能配置 ===
+compute:
+  # GPU配置
+  gpu_ids: [0]                  # 使用的GPU列表
+  mixed_precision: true         # 启用混合精度训练
   
   # 内存优化
-  enable_checkpointing: false              # 激活检查点（节省内存但增加计算时间）
+  find_unused_parameters: false # DDP时是否查找未使用参数
+  sync_batchnorm: false         # 是否同步批标准化
   
-# 可复现性配置
-reproducibility:
-  seed: 42
-  deterministic: true
-  benchmark: false                         # cuDNN基准模式
+  # 性能监控
+  profiler: null                # 性能分析器：null/simple/advanced/pytorch
+  
+# === 实验特定配置 ===
+# 这个实验的特殊设置和超参数
+experiment_config:
+  # 数据平衡策略
+  class_balance_strategy: "focal_loss"  # focal_loss/weighted_sampling/cost_sensitive
+  
+  # 模型复杂度控制
+  model_complexity: "tiny"              # tiny/small/base/large
+  
+  # 训练策略
+  training_strategy: "standard"         # standard/progressive/curriculum
+  
+  # 评估策略
+  evaluation_strategy:
+    use_tta: true                       # 测试时增强
+    tta_augmentations: 4                # TTA增强次数
+    confidence_threshold: 0.5           # 预测置信度阈值
+  
+  # 结果报告配置
+  reporting:
+    generate_confusion_matrix: true
+    generate_roc_curve: true
+    generate_precision_recall_curve: true
+    save_predictions: true
+    save_model_summary: true
 
-# 输出配置
-outputs:
-  # 检查点保存
-  checkpoint_dir: "experiments/optical_baseline/checkpoints"
+# === 调试和开发配置 ===
+# 开发和调试时的特殊设置
+debug:
+  # 快速开发模式
+  fast_dev_run: false           # 只运行几个batch进行调试
+  overfit_batches: 0.0          # 过拟合特定batch数量（调试用）
   
-  # 日志保存
-  log_dir: "experiments/optical_baseline/logs"
+  # 数据验证
+  validate_data_on_start: true  # 训练前验证数据完整性
   
-  # 结果保存
-  results_dir: "experiments/optical_baseline/results"
+  # 模型验证
+  run_model_test: false         # 运行模型的单元测试
   
-  # 预测保存
-  predictions_dir: "experiments/optical_baseline/predictions"
-
----
-# =============================================================================
-# 使用示例和快速配置
-# =============================================================================
-
-# 示例1：快速测试配置（小数据集，快速验证）
-quick_test:
-  model:
-    backbone_name: "swin_tiny_patch4_window7_224"
-    dropout_rate: 0.3                     # 更高的dropout防止过拟合
+  # 性能分析
+  profile_model: false          # 对模型进行性能分析
   
-  data:
-    batch_size: 16                         # 更小的批次
-    val_split: 0.3                         # 更大的验证集
+# === 实验记录 ===
+# 便于后续分析和比较的实验记录
+experiment_log:
+  expected_metrics:
+    val_f1: 0.80                # 预期的F1分数
+    val_accuracy: 0.85          # 预期的准确率
+    training_time_hours: 2.0    # 预期的训练时间
   
-  training:
-    max_epochs: 20                         # 更少的训练轮数
-    lr: 2e-4                              # 稍高的学习率
-    
-  callbacks:
-    early_stopping:
-      patience: 8                          # 更短的耐心
-
-# 示例2：高性能配置（大GPU，追求最佳性能）
-high_performance:
-  model:
-    backbone_name: "swin_base_patch4_window7_224"  # 更大的模型
-    classifier_type: "mlp"                 # 更复杂的分类头
+  baseline_comparison:
+    previous_best_f1: 0.75      # 之前最好的F1分数
+    improvement_target: 0.05    # 目标改进幅度
   
-  data:
-    batch_size: 64                         # 更大的批次
-    use_weighted_sampling: true            # 处理类别不平衡
-  
-  training:
-    max_epochs: 100                        # 更多训练轮数
-    optimizer:
-      layer_wise_lr: true                  # 使用层次化学习率
-    
-  compute:
-    precision: "16-mixed"                  # 混合精度训练
-    accumulate_grad_batches: 2             # 梯度累积
-
-# 示例3：实验配置（系统性比较不同设置）
-experimental:
-  # 可以定义多个实验变体
-  variants:
-    - name: "baseline"
-      model: { backbone_name: "swin_tiny_patch4_window7_224" }
-      training: { lr: 1e-4 }
-      
-    - name: "larger_model"  
-      model: { backbone_name: "swin_small_patch4_window7_224" }
-      training: { lr: 5e-5 }
-      
-    - name: "focal_loss"
-      training: { loss: { type: "focal", alpha: 1.0, gamma: 2.0 } }
-      
-    - name: "weighted_sampling"
-      data: { use_weighted_sampling: true }
-
-# 配置文件使用说明
-usage_instructions: |
-  1. 基础使用：
-     python train.py --config-path=configs/experiment --config-name=optical_baseline
-     
-  2. 覆盖参数：
-     python train.py training.max_epochs=100 data.batch_size=64
-     
-  3. 使用预定义变体：
-     python train.py +experiment=quick_test
-     
-  4. 多实验运行：
-     python train.py --multirun experiment=experimental.variants
+  resource_requirements:
+    min_gpu_memory_gb: 8        # 最小GPU内存需求
+    estimated_training_time: "2-3 hours"
+    disk_space_gb: 5            # 磁盘空间需求

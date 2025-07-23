@@ -1,31 +1,29 @@
+#!/usr/bin/env python3
 """
-MM-LandslideNet 统一项目入口点
+MM-LandslideNet 统一项目入口点 (重构版)
 
-核心功能：
-1. 模型训练 (train)
-2. 模型测试 (test)
-3. 模型推理 (predict)
-4. 性能评估 (evaluate)
-5. 数据分析 (analyze)
-6. 模型转换 (convert)
-
-使用示例：
-1. 训练模型：python main.py train --config-path configs/experiment --config-name optical_baseline
-2. 测试模型：python main.py test --checkpoint path/to/model.ckpt
-3. 批量推理：python main.py predict --checkpoint path/to/model.ckpt --input-dir test_data/
-4. 快速开始：python main.py train --preset quick_test
+这是参考latent-diffusion设计的新版本入口点。核心思想是"配置驱动一切"：
+- 所有组件都通过配置文件创建
+- 支持多种任务（训练、测试、推理等）
+- 极简的代码逻辑，最大的灵活性
 
 设计哲学：
-"一个入口，多种可能" - 通过统一的接口，让复杂的深度学习工作流变得简单易用。
+"让配置文件成为唯一的变化点" - 添加新模型、新数据集或新训练策略时，
+只需要编写配置文件，无需修改任何Python代码。
+
+教学要点：
+对比您原来的main.py，新版本的核心改进是用"配置驱动"替代了"代码驱动"。
+这种设计让框架具备了类似latent-diffusion的强大灵活性。
 """
 
+import os
 import sys
 import argparse
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, Optional
 import warnings
-import numpy as np
+from datetime import datetime
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent
@@ -38,493 +36,693 @@ warnings.filterwarnings("ignore", ".*The dataloader.*")
 import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
-import hydra
-from hydra import compose, initialize_config_dir
 
-# 导入项目模块
+# 导入我们的核心工具
+from lightning_landslide.src.utils.instantiate import instantiate_from_config, validate_config_structure
 from lightning_landslide.src.utils.logging_utils import setup_logging, get_project_logger
 
 logger = get_project_logger(__name__)
 
 
-class TaskRunner:
+class ExperimentRunner:
     """
-    任务执行器基类
+    实验运行器
 
-    这个类定义了所有任务执行器的通用接口。每种具体的任务
-    （训练、测试、推理等）都会继承这个基类，实现统一的
-    执行模式。
+    这个类负责协调整个实验的执行流程。它就像一个指挥家，
+    根据配置文件的"乐谱"来指挥各个组件协同工作。
 
-    这种设计让main.py能够以相同的方式处理不同类型的任务，
-    同时为每种任务提供了足够的定制空间。
+    与您原来的TaskRunner相比，这个版本更加专注和简化：
+    - 只有一个核心职责：运行实验
+    - 所有的复杂性都封装在配置文件中
+    - 代码逻辑变得极其简洁
     """
 
-    def __init__(self, args: argparse.Namespace):
-        self.args = args
-        self.setup_environment()
+    def __init__(self, config_path: str, task: str = "train"):
+        """
+        初始化实验运行器
 
-    def setup_environment(self):
-        """设置执行环境"""
+        Args:
+            config_path: 配置文件路径
+            task: 要执行的任务类型（train/test/predict等）
+        """
+        self.config_path = Path(config_path)
+        self.task = task
+        self.config = self._load_config()
+        self._setup_environment()
+
+    def _load_config(self) -> DictConfig:
+        """
+        加载和验证配置文件
+
+        这里我们做两件事：
+        1. 加载YAML配置文件
+        2. 验证配置的基本结构
+        """
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {self.config_path}")
+
+        logger.info(f"Loading config from: {self.config_path}")
+        config = OmegaConf.load(self.config_path)
+
+        # 验证配置结构
+        if not validate_config_structure(config):
+            raise ValueError("Invalid configuration structure")
+
+        logger.info("✓ Configuration loaded and validated")
+        return config
+
+    def _setup_environment(self):
+        """
+        设置实验环境
+
+        包括日志、随机种子、输出目录等基础设施。
+        """
         # 设置日志
-        log_level = logging.DEBUG if self.args.verbose else logging.INFO
+        log_level = getattr(logging, self.config.get("log_level", "INFO").upper())
         setup_logging(level=log_level)
 
-        # 设置随机种子（如果指定）
-        if hasattr(self.args, "seed") and self.args.seed is not None:
-            pl.seed_everything(self.args.seed, workers=True)
-            logger.info(f"Set random seed to {self.args.seed}")
+        # 设置随机种子
+        if "seed" in self.config:
+            pl.seed_everything(self.config.seed, workers=True)
+            logger.info(f"Set random seed to {self.config.seed}")
+
+        # 创建输出目录
+        self._create_output_dirs()
+
+        # 保存配置文件到实验目录
+        self._save_config()
+
+    def _create_output_dirs(self):
+        """创建实验需要的输出目录"""
+        if "outputs" in self.config:
+            for dir_name, dir_path in self.config.outputs.items():
+                Path(dir_path).mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Created directory: {dir_path}")
+
+    def _save_config(self):
+        """保存配置文件到实验目录（确保可重现性）"""
+        if "outputs" in self.config and "log_dir" in self.config.outputs:
+            config_save_path = Path(self.config.outputs.log_dir) / "config.yaml"
+            config_save_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(config_save_path, "w") as f:
+                OmegaConf.save(self.config, f)
+
+            logger.info(f"Config saved to: {config_save_path}")
 
     def run(self) -> Dict[str, Any]:
-        """执行任务的主方法，子类必须实现"""
-        raise NotImplementedError("Subclasses must implement run method")
-
-    def load_config(self, config_path: str = None, config_name: str = None) -> DictConfig:
         """
-        加载配置文件
+        运行实验的主方法
 
-        这个方法提供了灵活的配置加载机制，支持多种配置来源：
-        1. 命令行指定的配置文件
-        2. 预设的配置模板
-        3. 检查点中保存的配置
+        这是整个框架的核心。它根据任务类型调用相应的执行方法。
+        注意这里的代码有多么简洁 - 所有的复杂性都被配置文件吸收了。
+
+        Returns:
+            实验结果字典
         """
-        if config_path and config_name:
-            # 从指定路径加载配置
-            with initialize_config_dir(config_dir=str(Path(config_path).absolute())):
-                cfg = compose(config_name=config_name)
-        elif hasattr(self.args, "preset") and self.args.preset:
-            # 使用预设配置
-            cfg = self._load_preset_config(self.args.preset)
-        else:
-            # 使用默认配置
-            cfg = self._load_default_config()
+        logger.info(f"🚀 Starting {self.task} task")
+        self._print_experiment_info()
 
-        # 应用命令行覆盖
-        if hasattr(self.args, "overrides") and self.args.overrides:
-            for override in self.args.overrides:
-                self._apply_override(cfg, override)
-
-        return cfg
-
-    def _load_preset_config(self, preset_name: str) -> DictConfig:
-        """加载预设配置"""
-        preset_configs = {
-            "quick_test": {
-                "experiment": {"name": "quick_test", "description": "Quick test run"},
-                "model": {"type": "optical_swin", "backbone_name": "swin_tiny_patch4_window7_224"},
-                "data": {"batch_size": 16, "val_split": 0.3},
-                "training": {"max_epochs": 10, "optimizer": {"lr": 2e-4}},
-                "compute": {"precision": "16-mixed"},
-            },
-            "full_multimodal": {
-                "experiment": {"name": "full_multimodal", "description": "Full 13-channel training"},
-                "model": {"type": "optical_swin", "input_channels": 13},
-                "data": {"usage_mode": "full_multimodal", "batch_size": 32},
-                "training": {"max_epochs": 50},
-            },
-            "high_performance": {
-                "experiment": {"name": "high_performance", "description": "High-performance training"},
-                "model": {"type": "optical_swin", "backbone_name": "swin_base_patch4_window7_224"},
-                "data": {"batch_size": 64, "use_weighted_sampling": True},
-                "training": {"max_epochs": 100, "optimizer": {"layer_wise_lr": True}},
-                "compute": {"precision": "16-mixed", "accumulate_grad_batches": 2},
-            },
+        # 根据任务类型分发到不同的执行方法
+        task_methods = {
+            "train": self._run_training,
+            "test": self._run_testing,
+            "predict": self._run_prediction,
+            "validate": self._run_validation,
         }
 
-        if preset_name not in preset_configs:
-            raise ValueError(f"Unknown preset: {preset_name}. Available: {list(preset_configs.keys())}")
+        if self.task not in task_methods:
+            raise ValueError(f"Unknown task: {self.task}. Available: {list(task_methods.keys())}")
 
-        return OmegaConf.create(preset_configs[preset_name])
+        return task_methods[self.task]()
 
-    def _load_default_config(self) -> DictConfig:
-        """加载默认配置"""
-        default_config_path = project_root / "configs" / "experiment" / "optical_baseline.yaml"
-        if default_config_path.exists():
-            return OmegaConf.load(default_config_path)
-        else:
-            # 如果配置文件不存在，返回最小配置
-            logger.warning("Default config not found, using minimal configuration")
-            return self._load_preset_config("quick_test")
+    def _run_training(self) -> Dict[str, Any]:
+        """
+        执行训练任务
 
-    def _apply_override(self, cfg: DictConfig, override: str):
-        """应用配置覆盖"""
-        try:
-            key, value = override.split("=", 1)
-            # 尝试将值转换为适当的类型
-            try:
-                value = eval(value)  # 尝试解析为Python对象
-            except:
-                pass  # 保持为字符串
+        这是整个重构的核心成果展示。看看这个方法有多么简洁：
+        - 从配置创建模型：一行代码
+        - 从配置创建数据：一行代码
+        - 从配置创建训练器：一行代码
+        - 开始训练：一行代码
 
-            OmegaConf.set(cfg, key, value)
-            logger.info(f"Applied override: {key}={value}")
-        except Exception as e:
-            logger.warning(f"Failed to apply override '{override}': {e}")
+        这就是"配置驱动"设计的威力！
+        """
+        logger.info("Initializing training components...")
 
+        # 🎯 核心改进：用配置创建所有组件
+        # 不再需要复杂的工厂类或if-else判断
+        model = instantiate_from_config(self.config.model)
+        data_module = instantiate_from_config(self.config.data)
 
-class TrainTaskRunner(TaskRunner):
-    """
-    训练任务执行器
+        # 处理trainer配置（可能包含callbacks和loggers）
+        trainer_config = self.config.trainer.copy()
 
-    这个类专门处理模型训练任务。它整合了我们之前构建的
-    训练框架，同时提供了更灵活的配置和执行选项。
-    """
+        # 创建callbacks（如果配置中有的话）
+        if "callbacks" in self.config:
+            callbacks = []
+            for callback_name, callback_config in self.config.callbacks.items():
+                callback = instantiate_from_config(callback_config)
+                callbacks.append(callback)
+                logger.info(f"Added callback: {callback_name}")
+            trainer_config.params.callbacks = callbacks
 
-    def run(self) -> Dict[str, Any]:
-        """执行训练任务"""
-        logger.info("🚀 Starting training task")
-
-        # 加载配置
-        cfg = self.load_config(
-            config_path=getattr(self.args, "config_path", None), config_name=getattr(self.args, "config_name", None)
-        )
-
-        # 导入训练模块（延迟导入避免不必要的依赖）
-        from lightning_landslide.src.models import LandslideClassificationModule
-        from lightning_landslide.src.data import MultiModalDataModule
-        from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-        from pytorch_lightning.loggers import TensorBoardLogger
-
-        # 创建数据模块
-        logger.info("Creating data module...")
-        data_module = MultiModalDataModule(cfg)
-
-        # 创建模型
-        logger.info("Creating model...")
-        model = LandslideClassificationModule(cfg)
-
-        # 创建回调函数
-        callbacks = self._create_callbacks(cfg)
-
-        # 创建日志记录器
-        loggers = self._create_loggers(cfg)
+        # 创建loggers（如果配置中有的话）
+        if "loggers" in self.config:
+            loggers = []
+            for logger_name, logger_config in self.config.loggers.items():
+                log_obj = instantiate_from_config(logger_config)
+                loggers.append(log_obj)
+                logger.info(f"Added logger: {logger_name}")
+            trainer_config.params.logger = loggers
 
         # 创建训练器
-        trainer = pl.Trainer(
-            max_epochs=cfg.training.max_epochs,
-            accelerator=cfg.compute.accelerator,
-            devices=cfg.compute.devices,
-            precision=cfg.compute.precision,
-            callbacks=callbacks,
-            logger=loggers,
-            deterministic=cfg.reproducibility.deterministic,
-            log_every_n_steps=cfg.logging.log_every_n_steps,
-        )
+        trainer = instantiate_from_config(trainer_config)
 
-        # 开始训练
+        logger.info("🎓 Starting training...")
+
+        # 开始训练 - 就是这么简单！
         trainer.fit(model, data_module)
 
         # 返回训练结果
         return {
-            "status": "success",
-            "best_model_path": trainer.checkpoint_callback.best_model_path,
-            "best_model_score": trainer.checkpoint_callback.best_model_score.item(),
-            "final_epoch": trainer.current_epoch,
+            "status": "completed",
+            "best_model_path": trainer.checkpoint_callback.best_model_path if trainer.checkpoint_callback else None,
+            "trainer": trainer,
         }
 
-    def _create_callbacks(self, cfg: DictConfig) -> List[pl.Callback]:
-        """创建训练回调函数"""
-        callbacks = []
+    def _run_testing(self) -> Dict[str, Any]:
+        """
+        执行测试任务
 
-        # 模型检查点
-        checkpoint_callback = ModelCheckpoint(
-            monitor=cfg.callbacks.model_checkpoint.monitor,
-            mode=cfg.callbacks.model_checkpoint.mode,
-            save_top_k=cfg.callbacks.model_checkpoint.save_top_k,
-            filename=cfg.callbacks.model_checkpoint.filename,
-            save_last=True,
-        )
-        callbacks.append(checkpoint_callback)
+        测试任务的核心目标是评估已训练模型的性能。它加载保存的
+        检查点，在测试集上运行模型，并生成详细的性能报告。
 
-        # 早停
-        if cfg.callbacks.early_stopping.enable:
-            early_stopping = EarlyStopping(
-                monitor=cfg.callbacks.early_stopping.monitor,
-                patience=cfg.callbacks.early_stopping.patience,
-                mode=cfg.callbacks.early_stopping.mode,
-            )
-            callbacks.append(early_stopping)
+        Returns:
+            包含测试结果和相关文件路径的字典
+        """
+        logger.info("🧪 Initializing testing task...")
 
-        # 学习率监控
-        lr_monitor = LearningRateMonitor(logging_interval="epoch")
-        callbacks.append(lr_monitor)
+        # 验证必需的配置
+        if "checkpoint_path" not in self.config:
+            raise ValueError("Testing requires 'checkpoint_path' in config")
 
-        return callbacks
-
-    def _create_loggers(self, cfg: DictConfig) -> List[pl.LightningLoggerBase]:
-        """创建日志记录器"""
-        loggers = []
-
-        # TensorBoard日志
-        if cfg.logging.tensorboard.enable:
-            tb_logger = TensorBoardLogger(
-                save_dir=cfg.logging.save_dir, name=cfg.logging.name, version=cfg.experiment.name
-            )
-            loggers.append(tb_logger)
-
-        return loggers
-
-
-class TestTaskRunner(TaskRunner):
-    """
-    测试任务执行器
-
-    负责对训练好的模型进行测试评估。
-    """
-
-    def run(self) -> Dict[str, Any]:
-        """执行测试任务"""
-        logger.info("🧪 Starting test task")
-
-        if not hasattr(self.args, "checkpoint") or not self.args.checkpoint:
-            raise ValueError("Test task requires --checkpoint argument")
-
-        checkpoint_path = Path(self.args.checkpoint)
-        if not checkpoint_path.exists():
+        checkpoint_path = self.config.checkpoint_path
+        if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        # 从检查点加载模型和配置
-        from src.models import LandslideClassificationModule
-        from src.data import MultiModalDataModule
+        logger.info(f"Loading checkpoint: {checkpoint_path}")
 
-        logger.info(f"Loading model from {checkpoint_path}")
-        model = LandslideClassificationModule.load_from_checkpoint(checkpoint_path)
+        # 创建组件
+        logger.info("Creating model and data module...")
+        model = instantiate_from_config(self.config.model)
+        data_module = instantiate_from_config(self.config.data)
 
-        # 创建数据模块（使用保存的配置或新配置）
-        if hasattr(self.args, "config_path") and self.args.config_path:
-            cfg = self.load_config(self.args.config_path, self.args.config_name)
-        else:
-            # 尝试从检查点中恢复配置
-            cfg = self._extract_config_from_checkpoint(checkpoint_path)
-
-        data_module = MultiModalDataModule(cfg)
-
-        # 创建测试器
-        trainer = pl.Trainer(
-            accelerator="gpu" if torch.cuda.is_available() else "cpu", devices=1, logger=False  # 测试时不需要日志
+        # 为测试任务调整trainer配置
+        trainer_config = self.config.trainer.copy()
+        trainer_config.params.update(
+            {
+                "logger": False,  # 测试时不需要日志记录
+                "enable_checkpointing": False,  # 测试时不保存检查点
+                "enable_progress_bar": True,  # 显示测试进度
+            }
         )
 
-        # 执行测试
-        test_results = trainer.test(model, data_module)
+        trainer = instantiate_from_config(trainer_config)
 
-        logger.info("✅ Test completed")
-        return {"status": "success", "test_results": test_results, "checkpoint_path": str(checkpoint_path)}
+        # 运行测试
+        logger.info("🎯 Running model testing...")
+        test_results = trainer.test(model, data_module, ckpt_path=checkpoint_path)
 
-    def _extract_config_from_checkpoint(self, checkpoint_path: Path) -> DictConfig:
-        """从检查点中提取配置信息"""
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        # 保存测试结果
+        results_file = self._save_test_results(test_results)
 
-        if "hyper_parameters" in checkpoint:
-            # Lightning自动保存的超参数
-            return OmegaConf.create(checkpoint["hyper_parameters"])
-        else:
-            # 使用默认配置
-            logger.warning("No configuration found in checkpoint, using default")
-            return self._load_default_config()
+        logger.info("✅ Testing completed successfully!")
+        return {
+            "status": "completed",
+            "test_results": test_results,
+            "results_file": results_file,
+            "checkpoint_used": checkpoint_path,
+        }
 
+    def _run_prediction(self) -> Dict[str, Any]:
+        """
+        执行推理任务
 
-class PredictTaskRunner(TaskRunner):
-    """
-    推理任务执行器
+        推理任务用于在新数据上生成预测结果。它特别适用于：
+        1. 生成竞赛提交文件
+        2. 对新的遥感图像进行滑坡检测
+        3. 批量处理大量图像
 
-    处理批量推理任务，生成预测结果。
-    """
+        Returns:
+            包含预测结果和输出文件路径的字典
+        """
+        logger.info("🔮 Initializing prediction task...")
 
-    def run(self) -> Dict[str, Any]:
-        """执行推理任务"""
-        logger.info("🔮 Starting prediction task")
+        # 验证必需的配置
+        if "checkpoint_path" not in self.config:
+            raise ValueError("Prediction requires 'checkpoint_path' in config")
 
-        if not hasattr(self.args, "checkpoint") or not self.args.checkpoint:
-            raise ValueError("Predict task requires --checkpoint argument")
+        checkpoint_path = self.config.checkpoint_path
+        if not Path(checkpoint_path).exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        if not hasattr(self.args, "input_dir") or not self.args.input_dir:
-            raise ValueError("Predict task requires --input-dir argument")
+        logger.info(f"Loading model from: {checkpoint_path}")
 
-        # 导入必要的模块
-        from src.models import LandslideClassificationModule
+        # 创建组件
+        model = instantiate_from_config(self.config.model)
+        data_module = instantiate_from_config(self.config.data)
 
-        # 加载模型
-        logger.info(f"Loading model from {self.args.checkpoint}")
-        model = LandslideClassificationModule.load_from_checkpoint(self.args.checkpoint)
-        model.eval()
+        # 为推理任务配置trainer
+        trainer_config = self.config.trainer.copy()
+        trainer_config.params.update(
+            {
+                "logger": False,
+                "enable_checkpointing": False,
+                "enable_progress_bar": True,
+            }
+        )
+        trainer = instantiate_from_config(trainer_config)
 
-        # 设置输出目录
-        output_dir = Path(getattr(self.args, "output_dir", "predictions"))
+        # 运行预测
+        logger.info("🎯 Generating predictions...")
+        predictions = trainer.predict(model, data_module, ckpt_path=checkpoint_path)
+
+        # 处理和保存预测结果
+        processed_predictions = self._process_predictions(predictions)
+        output_files = self._save_predictions(processed_predictions)
+
+        logger.info("✅ Prediction completed successfully!")
+        return {
+            "status": "completed",
+            "predictions": processed_predictions,
+            "output_files": output_files,
+            "checkpoint_used": checkpoint_path,
+            "num_samples": len(processed_predictions) if processed_predictions else 0,
+        }
+
+    def _run_validation(self) -> Dict[str, Any]:
+        """
+        执行验证任务
+
+        验证任务用于在验证集上评估模型性能，通常用于：
+        1. 模型开发过程中的快速性能检查
+        2. 超参数调优
+        3. 模型选择和比较
+
+        Returns:
+            包含验证结果的字典
+        """
+        logger.info("🔍 Initializing validation task...")
+
+        # 创建组件
+        model = instantiate_from_config(self.config.model)
+        data_module = instantiate_from_config(self.config.data)
+
+        # 配置trainer（验证任务通常比较轻量）
+        trainer_config = self.config.trainer.copy()
+        trainer_config.params.update(
+            {
+                "logger": False,
+                "enable_checkpointing": False,
+                "enable_progress_bar": True,
+            }
+        )
+        trainer = instantiate_from_config(trainer_config)
+
+        # 检查是否指定了检查点
+        checkpoint_path = self.config.get("checkpoint_path")
+        if checkpoint_path:
+            logger.info(f"Using checkpoint: {checkpoint_path}")
+            if not Path(checkpoint_path).exists():
+                raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        # 运行验证
+        logger.info("🎯 Running validation...")
+        val_results = trainer.validate(model, data_module, ckpt_path=checkpoint_path)
+
+        # 保存验证结果
+        results_file = self._save_validation_results(val_results)
+
+        logger.info("✅ Validation completed successfully!")
+        return {
+            "status": "completed",
+            "validation_results": val_results,
+            "results_file": results_file,
+            "checkpoint_used": checkpoint_path,
+        }
+
+    def _save_test_results(self, test_results: List[Dict]) -> Path:
+        """
+        保存测试结果到文件
+
+        Args:
+            test_results: Lightning trainer.test()的返回结果
+
+        Returns:
+            保存的结果文件路径
+        """
+        import json
+        from datetime import datetime
+
+        # 创建输出目录
+        output_dir = Path(self.config.outputs.get("predictions_dir", "outputs/test_results"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 执行批量推理
-        predictions = self._run_batch_inference(model, self.args.input_dir, output_dir)
-
-        logger.info(f"✅ Prediction completed. Results saved to {output_dir}")
-        return {"status": "success", "predictions_count": len(predictions), "output_dir": str(output_dir)}
-
-    def _run_batch_inference(self, model, input_dir: str, output_dir: Path) -> List[Dict]:
-        """执行批量推理"""
-        input_path = Path(input_dir)
-        predictions = []
-
-        # 获取所有输入文件
-        data_files = list(input_path.glob("*.npy"))
-        logger.info(f"Found {len(data_files)} files for prediction")
-
-        # 逐文件进行推理
-        for data_file in data_files:
-            try:
-                # 加载数据
-                data = torch.from_numpy(np.load(data_file)).float().unsqueeze(0)
-
-                # 执行推理
-                with torch.no_grad():
-                    logits = model(data)
-                    prob = torch.sigmoid(logits).item()
-                    pred = int(prob > 0.5)
-
-                # 记录结果
-                result = {"file_id": data_file.stem, "probability": prob, "prediction": pred}
-                predictions.append(result)
-
-            except Exception as e:
-                logger.error(f"Failed to process {data_file}: {e}")
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"test_results_{self.config.experiment_name}_{timestamp}.json"
+        results_file = output_dir / filename
 
         # 保存结果
-        self._save_predictions(predictions, output_dir)
-        return predictions
+        with open(results_file, "w") as f:
+            json.dump(
+                {
+                    "experiment_name": self.config.experiment_name,
+                    "timestamp": timestamp,
+                    "checkpoint_path": self.config.get("checkpoint_path"),
+                    "test_results": test_results,
+                    "config_summary": {
+                        "model_type": self.config.model.target.split(".")[-1],
+                        "data_config": self.config.data.target.split(".")[-1],
+                    },
+                },
+                f,
+                indent=2,
+            )
 
-    def _save_predictions(self, predictions: List[Dict], output_dir: Path):
-        """保存预测结果"""
+        logger.info(f"Test results saved to: {results_file}")
+        return results_file
+
+    def _save_validation_results(self, val_results: List[Dict]) -> Path:
+        """
+        保存验证结果到文件
+
+        Args:
+            val_results: Lightning trainer.validate()的返回结果
+
+        Returns:
+            保存的结果文件路径
+        """
+        import json
+        from datetime import datetime
+
+        # 创建输出目录
+        output_dir = Path(self.config.outputs.get("predictions_dir", "outputs/validation_results"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"validation_results_{self.config.experiment_name}_{timestamp}.json"
+        results_file = output_dir / filename
+
+        # 保存结果
+        with open(results_file, "w") as f:
+            json.dump(
+                {
+                    "experiment_name": self.config.experiment_name,
+                    "timestamp": timestamp,
+                    "checkpoint_path": self.config.get("checkpoint_path"),
+                    "validation_results": val_results,
+                    "config_summary": {
+                        "model_type": self.config.model.target.split(".")[-1],
+                        "data_config": self.config.data.target.split(".")[-1],
+                    },
+                },
+                f,
+                indent=2,
+            )
+
+        logger.info(f"Validation results saved to: {results_file}")
+        return results_file
+
+    def _process_predictions(self, raw_predictions: List) -> List[Dict]:
+        """
+        处理原始预测结果
+
+        将PyTorch张量转换为可序列化的格式，并添加必要的元数据。
+
+        Args:
+            raw_predictions: trainer.predict()的原始返回结果
+
+        Returns:
+            处理后的预测结果列表
+        """
+        import torch
+        import numpy as np
+
+        processed = []
+
+        for batch_idx, batch_predictions in enumerate(raw_predictions):
+            # 如果预测结果是张量，转换为numpy数组
+            if isinstance(batch_predictions, torch.Tensor):
+                predictions_np = batch_predictions.cpu().numpy()
+            else:
+                predictions_np = batch_predictions
+
+            # 处理每个样本的预测
+            for sample_idx, prediction in enumerate(predictions_np):
+                processed.append(
+                    {
+                        "batch_idx": batch_idx,
+                        "sample_idx": sample_idx,
+                        "prediction": float(prediction) if np.isscalar(prediction) else prediction.tolist(),
+                        "probability": (
+                            float(torch.sigmoid(torch.tensor(prediction)).item()) if np.isscalar(prediction) else None
+                        ),
+                    }
+                )
+
+        logger.info(f"Processed {len(processed)} predictions")
+        return processed
+
+    def _save_predictions(self, predictions: List[Dict]) -> Dict[str, Path]:
+        """
+        保存预测结果到多种格式的文件
+
+        Args:
+            predictions: 处理后的预测结果
+
+        Returns:
+            保存的文件路径字典
+        """
+        import json
         import pandas as pd
+        from datetime import datetime
 
-        # 创建DataFrame
-        df = pd.DataFrame(predictions)
+        # 创建输出目录
+        output_dir = Path(self.config.outputs.get("predictions_dir", "outputs/predictions"))
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 保存为CSV
-        csv_path = output_dir / "predictions.csv"
-        df.to_csv(csv_path, index=False)
+        # 生成时间戳
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"predictions_{self.config.experiment_name}_{timestamp}"
 
-        # 创建提交格式文件
-        submission_df = df[["file_id", "prediction"]].copy()
-        submission_df.columns = ["ID", "label"]
-        submission_path = output_dir / "submission.csv"
-        submission_df.to_csv(submission_path, index=False)
+        output_files = {}
 
-        logger.info(f"Saved predictions to {csv_path}")
-        logger.info(f"Saved submission format to {submission_path}")
+        # 保存JSON格式（完整信息）
+        json_file = output_dir / f"{base_filename}.json"
+        with open(json_file, "w") as f:
+            json.dump(
+                {
+                    "experiment_name": self.config.experiment_name,
+                    "timestamp": timestamp,
+                    "checkpoint_path": self.config.get("checkpoint_path"),
+                    "num_predictions": len(predictions),
+                    "predictions": predictions,
+                },
+                f,
+                indent=2,
+            )
+        output_files["json"] = json_file
+
+        # 保存CSV格式（便于分析）
+        if predictions:
+            df_data = []
+            for pred in predictions:
+                df_data.append(
+                    {
+                        "sample_id": f"sample_{pred['batch_idx']}_{pred['sample_idx']}",
+                        "prediction": pred["prediction"],
+                        "probability": pred.get("probability", None),
+                    }
+                )
+
+            df = pd.DataFrame(df_data)
+            csv_file = output_dir / f"{base_filename}.csv"
+            df.to_csv(csv_file, index=False)
+            output_files["csv"] = csv_file
+
+        logger.info(f"Predictions saved to: {list(output_files.values())}")
+        return output_files
+
+    def _print_experiment_info(self):
+        """打印实验信息"""
+        print("\n" + "=" * 80)
+        print(f"🚀 MM-LandslideNet Experiment: {self.config.get('experiment_name', 'Unnamed')}")
+        print("=" * 80)
+        print(f"📝 Task: {self.task}")
+        print(f"📁 Config: {self.config_path}")
+        print(f"🕐 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if "model" in self.config:
+            print(f"🧠 Model: {self.config.model.target.split('.')[-1]}")
+        if "data" in self.config:
+            print(f"📊 Data: {self.config.data.get('params', {}).get('train_data_dir', 'N/A')}")
+
+        print("=" * 80 + "\n")
 
 
 def create_parser() -> argparse.ArgumentParser:
     """
     创建命令行参数解析器
 
-    这个函数定义了统一入口点的完整命令行接口。
-    设计上参考了git等成功工具的子命令模式。
+    新版本的命令行接口更加简洁，重点突出配置文件的作用。
     """
     parser = argparse.ArgumentParser(
-        description="MM-LandslideNet: Multi-modal Landslide Detection Framework",
+        description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # 基础训练
-  python main.py train --config-path configs/experiment --config-name optical_baseline
+  # 训练模型
+  python main.py train configs/experiment/optical_baseline.yaml
   
-  # 使用预设快速训练
-  python main.py train --preset quick_test
+  # 测试模型  
+  python main.py test configs/experiment/optical_baseline.yaml
   
-  # 训练时覆盖参数
-  python main.py train --preset quick_test --override training.max_epochs=20 --override data.batch_size=32
+  # 运行推理
+  python main.py predict configs/experiment/optical_baseline.yaml
   
-  # 测试模型
-  python main.py test --checkpoint experiments/optical_baseline/checkpoints/best.ckpt
-  
-  # 批量推理
-  python main.py predict --checkpoint best.ckpt --input-dir test_data/ --output-dir results/
-  
-  # 快速帮助
-  python main.py --help
-  python main.py train --help
+  # 验证模型
+  python main.py validate configs/experiment/optical_baseline.yaml
+
+Configuration-First Design:
+  This framework follows the "configuration-first" principle inspired by 
+  latent-diffusion. All model architectures, training strategies, and data 
+  processing pipelines are defined in YAML configuration files, making the
+  framework extremely flexible and maintainable.
         """,
     )
 
-    # 全局参数
+    # 主要参数
+    parser.add_argument("task", choices=["train", "test", "predict", "validate"], help="Task to execute")
+
+    parser.add_argument("config", type=str, help="Path to configuration file")
+
+    # 可选参数
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
-    parser.add_argument("--seed", type=int, help="Random seed for reproducibility")
 
-    # 创建子命令
-    subparsers = parser.add_subparsers(dest="task", help="Task to execute")
+    parser.add_argument("--checkpoint", type=str, help="Path to model checkpoint (overrides config)")
 
-    # 训练子命令
-    train_parser = subparsers.add_parser("train", help="Train a model")
-    train_parser.add_argument("--config-path", type=str, help="Path to config directory")
-    train_parser.add_argument("--config-name", type=str, help="Config file name (without .yaml)")
-    train_parser.add_argument(
-        "--preset",
+    parser.add_argument(
+        "--override",
         type=str,
-        choices=["quick_test", "full_multimodal", "high_performance"],
-        help="Use predefined configuration preset",
+        nargs="*",
+        help="Override config values (e.g., --override training.max_epochs=100 data.batch_size=32)",
     )
-    train_parser.add_argument(
-        "--override", action="append", dest="overrides", help="Override config parameters (e.g., training.lr=0.01)"
-    )
-
-    # 测试子命令
-    test_parser = subparsers.add_parser("test", help="Test a trained model")
-    test_parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
-    test_parser.add_argument("--config-path", type=str, help="Override config path")
-    test_parser.add_argument("--config-name", type=str, help="Override config name")
-
-    # 推理子命令
-    predict_parser = subparsers.add_parser("predict", help="Run batch prediction")
-    predict_parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
-    predict_parser.add_argument("--input-dir", required=True, help="Directory containing input data")
-    predict_parser.add_argument("--output-dir", default="predictions", help="Output directory for results")
 
     return parser
 
 
+def apply_overrides(config: DictConfig, overrides: list) -> DictConfig:
+    """
+    应用命令行覆盖
+
+    允许用户在命令行中覆盖配置文件中的特定值。
+    这在调试和快速实验时非常有用。
+
+    Args:
+        config: 原始配置
+        overrides: 覆盖列表，格式为 ["key=value", "another.key=value"]
+
+    Returns:
+        修改后的配置
+    """
+    if not overrides:
+        return config
+
+    logger.info(f"Applying {len(overrides)} config overrides...")
+
+    for override in overrides:
+        try:
+            key, value = override.split("=", 1)
+
+            # 尝试自动类型转换
+            try:
+                # 处理数字
+                if value.isdigit():
+                    value = int(value)
+                elif value.replace(".", "").isdigit() and value.count(".") == 1:
+                    value = float(value)
+                # 处理布尔值
+                elif value.lower() in ["true", "false"]:
+                    value = value.lower() == "true"
+                # 处理列表（简单情况）
+                elif value.startswith("[") and value.endswith("]"):
+                    value = eval(value)  # 注意：生产环境中应该用更安全的解析方法
+            except:
+                pass  # 保持为字符串
+
+            OmegaConf.set(config, key, value)
+            logger.info(f"  {key} = {value}")
+
+        except Exception as e:
+            logger.warning(f"Failed to apply override '{override}': {e}")
+
+    return config
+
+
 def main():
     """
-    主函数：项目的统一入口点
+    主函数
 
-    这个函数实现了整个框架的核心调度逻辑。它解析用户的命令，
-    创建相应的任务执行器，然后运行任务并处理结果。
+    这是整个程序的入口点。与您原来的main.py相比，
+    新版本的逻辑极其简洁：
+    1. 解析命令行参数
+    2. 创建实验运行器
+    3. 运行实验
+    4. 报告结果
+
+    所有的复杂性都被配置文件和实例化工具吸收了。
     """
     parser = create_parser()
     args = parser.parse_args()
 
-    # 如果没有指定任务，显示帮助信息
-    if args.task is None:
-        parser.print_help()
-        sys.exit(1)
-
-    # 创建任务执行器
-    task_runners = {"train": TrainTaskRunner, "test": TestTaskRunner, "predict": PredictTaskRunner}
-
-    if args.task not in task_runners:
-        logger.error(f"Unknown task: {args.task}")
-        sys.exit(1)
-
-    # 执行任务
     try:
-        runner = task_runners[args.task](args)
+        # 创建实验运行器
+        runner = ExperimentRunner(args.config, args.task)
+
+        # 应用命令行覆盖（如果有的话）
+        if args.override:
+            runner.config = apply_overrides(runner.config, args.override)
+
+        # 覆盖checkpoint路径（如果在命令行中指定）
+        if args.checkpoint:
+            runner.config.checkpoint_path = args.checkpoint
+            logger.info(f"Using checkpoint: {args.checkpoint}")
+
+        # 运行实验
         results = runner.run()
 
-        # 显示执行结果
-        print("\n" + "=" * 60)
-        print(f"🎉 Task '{args.task}' completed successfully!")
-        print("=" * 60)
+        # 报告结果
+        print(f"\n🎉 Task '{args.task}' completed successfully!")
+        if results.get("best_model_path"):
+            print(f"📁 Best model saved to: {results['best_model_path']}")
 
-        for key, value in results.items():
-            if key != "status":
-                print(f"{key}: {value}")
+        return 0
 
-        print("=" * 60 + "\n")
+    except KeyboardInterrupt:
+        logger.info("Experiment interrupted by user")
+        return 1
 
     except Exception as e:
-        logger.error(f"Task '{args.task}' failed: {str(e)}")
+        logger.error(f"Experiment failed: {e}")
         if args.verbose:
             import traceback
 
             traceback.print_exc()
-        sys.exit(1)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

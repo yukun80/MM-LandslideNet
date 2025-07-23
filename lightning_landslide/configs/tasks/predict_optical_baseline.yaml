@@ -1,0 +1,247 @@
+# =============================================================================
+# configs/tasks/predict_optical_baseline.yaml - 预测任务配置
+# =============================================================================
+
+# 这个配置文件专门用于推理任务，包括：
+# 1. 生成竞赛提交文件
+# 2. 对新的遥感图像进行滑坡检测
+# 3. 批量处理大量图像
+
+# === 实验信息 ===
+experiment_name: "optical_baseline_prediction"
+description: "Generate predictions using trained optical baseline model"
+version: "1.0.0"
+tags: ["predict", "inference", "optical", "baseline", "submission"]
+
+# 全局设置
+seed: 3407  # 确保预测结果可重现
+log_level: "INFO"
+
+# === 必需：检查点路径 ===
+checkpoint_path: "outputs/checkpoints/optical_baseline/best.ckpt"
+
+# === 模型配置 ===
+# 预测时的模型配置必须与训练时完全一致
+model:
+  target: lightning_landslide.src.models.LandslideClassificationModule
+  params:
+    base_model:
+      target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
+      params:
+        model_name: "swin_tiny_patch4_window7_224"
+        input_channels: 5
+        num_classes: 1
+        dropout_rate: 0.2
+        pretrained: true
+        freeze_backbone: false
+    
+    loss_config:
+      type: "focal"
+      focal_params:
+        alpha: 1.0
+        gamma: 2.0
+    
+    optimizer_config:
+      type: "adamw"
+      adamw_params:
+        lr: 1e-4  # 预测时不使用，但保持配置一致性
+        weight_decay: 1e-4
+    
+    scheduler_config:
+      type: "cosine_with_warmup"
+      cosine_params:
+        warmup_epochs: 5
+        min_lr_ratio: 0.01
+    
+    metrics_config:
+      primary_metric: "f1"
+      metrics: ["accuracy", "precision", "recall", "f1", "auroc"]
+      threshold: 0.5
+
+# === 数据配置 ===
+# 预测时主要使用测试数据或新的待预测数据
+data:
+  target: lightning_landslide.src.data.MultiModalDataModule
+  params:
+    # 数据路径配置
+    train_data_dir: "dataset/train_data"  # 需要用于数据模块初始化
+    test_data_dir: "dataset/test_data"    # 主要的预测数据源
+    train_csv: "dataset/Train.csv"
+    test_csv: "dataset/Test.csv"          # 包含待预测样本的ID列表
+    exclude_ids_file: "dataset/data_check/exclude_ids.json"
+    
+    # 通道配置
+    channel_config:
+      total_channels: 13
+      channel_groups:
+        optical: [0, 1, 2, 3]
+        derived: ["ndvi"]
+      usage_modes:
+        optical_only:
+          groups: ["optical", "derived"]
+    active_mode: "optical_only"
+    
+    # 数据加载配置 - 针对推理优化
+    batch_size: 256       # 推理时可以使用更大的batch size
+    num_workers: 12       # 增加workers加速数据加载
+    pin_memory: true
+    
+    # 预测时不需要数据分割和增强
+    val_split: 0.0
+    stratify: false
+    augmentation:
+      train: {}
+      val: {}
+      test: {}
+
+# === 训练器配置 ===
+# 针对推理任务优化的trainer配置
+trainer:
+  target: pytorch_lightning.Trainer
+  params:
+    # 基础配置
+    accelerator: "auto"
+    devices: "auto"
+    precision: "16-mixed"     # 使用混合精度加速推理
+    
+    # 推理专用配置
+    logger: false             # 推理时不需要日志
+    enable_checkpointing: false
+    enable_progress_bar: true  # 显示推理进度
+    enable_model_summary: false
+    
+    # 数据限制（用于测试或部分预测）
+    limit_predict_batches: 1.0  # 处理全部数据
+    # limit_predict_batches: 0.1  # 快速测试：只处理10%的数据
+
+# === 输出配置 ===
+outputs:
+  checkpoint_dir: "outputs/checkpoints/predictions"
+  log_dir: "outputs/logs/predictions"
+  predictions_dir: "outputs/predictions"
+  figures_dir: "outputs/figures/predictions"
+
+# === 预测特定配置 ===
+prediction_config:
+  # 输出格式配置
+  output_formats:
+    save_probabilities: true    # 保存原始概率值
+    save_binary_predictions: true  # 保存二分类结果
+    save_confidence_scores: true   # 保存置信度分数
+  
+  # 文件命名配置
+  output_naming:
+    use_timestamp: true         # 在文件名中包含时间戳
+    include_model_name: true    # 在文件名中包含模型名称
+    include_experiment_name: true
+  
+  # 预测后处理
+  post_processing:
+    apply_threshold: true       # 应用分类阈值
+    threshold: 0.5             # 分类阈值
+    apply_smoothing: false     # 是否应用预测平滑
+    smoothing_window: 3        # 平滑窗口大小
+  
+  # TTA（测试时增强）配置
+  tta:
+    enable: true              # 启用TTA提高预测质量
+    augmentations:
+      horizontal_flip: true
+      vertical_flip: true
+      rotation_90: true
+      rotation_180: false
+    aggregation_method: "mean"  # 聚合方法：mean/max/voting
+    
+  # 批量处理配置
+  batch_processing:
+    save_intermediate_results: false  # 是否保存中间结果
+    checkpoint_frequency: 1000       # 每处理多少样本保存一次中间结果
+
+# === 竞赛提交配置 ===
+# 如果是为竞赛生成提交文件，使用这些配置
+submission_config:
+  # 提交文件格式
+  format: "csv"                    # 提交文件格式
+  columns: ["ID", "label"]         # 提交文件列名
+  
+  # ID处理
+  id_column: "ID"                  # ID列名
+  id_prefix: "ID_"                 # ID前缀（如果需要）
+  
+  # 标签映射
+  label_mapping:
+    positive_class: 1              # 滑坡类别的标签值
+    negative_class: 0              # 非滑坡类别的标签值
+  
+  # 文件命名
+  filename_template: "submission_{experiment_name}_{timestamp}.csv"
+  
+  # 验证配置
+  validate_submission: true        # 验证提交文件格式
+  expected_num_samples: 5399       # 期望的样本数量（根据竞赛要求调整）
+
+# === 可视化配置 ===
+visualization:
+  # 预测结果可视化
+  plot_prediction_distribution: true  # 绘制预测分布直方图
+  plot_confidence_distribution: true  # 绘制置信度分布
+  
+  # 样本可视化
+  visualize_high_confidence_samples: true   # 可视化高置信度样本
+  visualize_low_confidence_samples: true    # 可视化低置信度样本
+  num_samples_per_category: 10             # 每类别可视化的样本数
+  
+  # 图表配置
+  figure_size: [12, 8]
+  dpi: 300
+  save_format: "png"
+
+# === 质量控制配置 ===
+quality_control:
+  # 预测质量检查
+  check_prediction_range: true     # 检查预测值范围是否合理
+  expected_positive_ratio: [0.01, 0.15]  # 期望的正样本比例范围
+  
+  # 异常检测
+  detect_outliers: true           # 检测异常预测
+  outlier_threshold: 3.0          # 异常值检测阈值（标准差倍数）
+  
+  # 一致性检查
+  check_prediction_consistency: true  # 检查预测一致性
+  consistency_threshold: 0.95     # 一致性阈值
+
+# === 性能监控配置 ===
+performance:
+  # 推理速度监控
+  monitor_inference_speed: true   # 监控推理速度
+  log_batch_times: false         # 记录每个batch的处理时间
+  
+  # 内存使用监控
+  monitor_memory_usage: true     # 监控内存使用
+  
+  # 基准测试
+  run_speed_benchmark: false     # 运行速度基准测试
+  benchmark_iterations: 10      # 基准测试迭代次数
+
+# === 计算资源配置 ===
+compute:
+  gpu_ids: [0]
+  mixed_precision: true
+  
+  # 推理优化
+  torch_compile: false          # 是否使用torch.compile优化（需要PyTorch 2.0+）
+  cudnn_benchmark: true         # 启用cuDNN基准模式
+  
+  # 内存优化
+  empty_cache_frequency: 100    # 每处理多少个batch清理一次GPU缓存
+
+# === 调试配置 ===
+debug:
+  # 预测调试
+  save_input_samples: false     # 保存输入样本用于调试
+  save_feature_maps: false      # 保存特征图用于分析
+  log_prediction_stats: true    # 记录预测统计信息
+  
+  # 快速调试模式
+  quick_test: false            # 快速测试模式（只处理少量数据）
+  quick_test_samples: 100      # 快速测试的样本数量
