@@ -15,23 +15,14 @@ __init__.py文件在Python包管理中起着重要作用。它不仅让
 代码可以访问哪些组件。
 """
 
-# 导入核心数据模块
+# 导入多模态数据模块（如果存在）
 try:
-    from .multimodal_data_module import MultiModalDataModule
+    from .multimodal_dataset import MultiModalDataset
 
-    print("✅ MultiModalDataModule imported successfully")
+    print("✅ MultiModalDataset imported successfully")
 except ImportError as e:
-    print(f"⚠️  Could not import MultiModalDataModule: {e}")
-    MultiModalDataModule = None
-
-# 导入光学数据模块（如果存在）
-try:
-    from .optical_data_module import OpticalDataModule
-
-    print("✅ OpticalDataModule imported successfully")
-except ImportError as e:
-    print(f"⚠️  Could not import OpticalDataModule: {e}")
-    OpticalDataModule = None
+    print(f"⚠️  Could not import MultiModalDataset: {e}")
+    MultiModalDataset = None
 
 # 导入虚拟数据模块（用于测试）
 try:
@@ -43,31 +34,29 @@ except ImportError as e:
     DummyDataModule = None
     DummyLandslideDataset = None
 
-# 导入数据集类（如果存在）
-try:
-    from .landslide_dataset import LandslideDataset
+# # 导入数据集类（如果存在）
+# try:
+#     from .landslide_dataset import LandslideDataset
 
-    print("✅ LandslideDataset imported successfully")
-except ImportError as e:
-    print(f"⚠️  Could not import LandslideDataset: {e}")
-    LandslideDataset = None
+#     print("✅ LandslideDataset imported successfully")
+# except ImportError as e:
+#     print(f"⚠️  Could not import LandslideDataset: {e}")
+#     LandslideDataset = None
 
-# 导入数据处理工具
-try:
-    from .data_utils import *
+# # 导入数据处理工具
+# try:
+#     from .data_utils import *
 
-    print("✅ Data utilities imported successfully")
-except ImportError as e:
-    print(f"⚠️  Could not import data utilities: {e}")
+#     print("✅ Data utilities imported successfully")
+# except ImportError as e:
+#     print(f"⚠️  Could not import data utilities: {e}")
+
 
 # 定义公共接口
 __all__ = [
     # 核心数据模块
-    "MultiModalDataModule",
-    "OpticalDataModule",
-    "DummyDataModule",
+    "MultiModalDataset",
     # 数据集类
-    "LandslideDataset",
     "DummyLandslideDataset",
     # 工具函数（通过data_utils导入）
 ]

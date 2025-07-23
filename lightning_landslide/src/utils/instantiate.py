@@ -184,7 +184,8 @@ def validate_config_structure(config: Union[Dict, DictConfig], required_sections
         True if valid, False otherwise
     """
     if required_sections is None:
-        required_sections = ["model", "data", "training"]
+        # 修复：使用'trainer'而不是'training'，与实际配置结构保持一致
+        required_sections = ["model", "data", "trainer"]
 
     missing_sections = []
     for section in required_sections:

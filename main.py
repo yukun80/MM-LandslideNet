@@ -21,7 +21,7 @@ import sys
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import warnings
 from datetime import datetime
 
