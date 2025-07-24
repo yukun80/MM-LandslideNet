@@ -69,18 +69,8 @@ def instantiate_from_config(config: Union[Dict, DictConfig], **kwargs) -> Any:
     这是我们的"万能工厂"函数。它读取配置文件中的 'target' 字段，
     导入对应的类，然后用 'params' 字段中的参数创建实例。
 
-    配置文件格式：
-    ```yaml
-    target: lightning_landslide.src.models.OpticalSwinModel  # 类的完整路径
-    params:                                                   # 构造函数参数
-      model_name: swin_tiny_patch4_window7_224
-      num_classes: 1
-      dropout_rate: 0.2
-    ```
-
     Args:
         config: 配置字典或DictConfig对象
-        **kwargs: 额外的参数（会覆盖config中的params）
 
     Returns:
         创建的对象实例
@@ -89,21 +79,6 @@ def instantiate_from_config(config: Union[Dict, DictConfig], **kwargs) -> Any:
         KeyError: 如果配置中缺少 'target' 字段
         ImportError: 如果无法导入指定的类
     """
-    # 处理特殊情况
-    if not isinstance(config, (dict, DictConfig)):
-        raise TypeError(f"Config must be dict or DictConfig, got {type(config)}")
-
-    # 检查必需的 'target' 字段
-    if "target" not in config:
-        # 处理一些特殊的配置标记（借鉴latent-diffusion的设计）
-        if config == "__is_first_stage__":
-            return None
-        elif config == "__is_unconditional__":
-            return None
-        raise KeyError(
-            "Expected key `target` to instantiate object. "
-            "Config format should be: {'target': 'path.to.Class', 'params': {...}}"
-        )
 
     # 获取目标类
     target_cls = get_obj_from_str(config["target"])

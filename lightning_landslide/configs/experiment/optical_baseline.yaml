@@ -35,10 +35,10 @@ model:
       params:
         model_name: "swin_tiny_patch4_window7_224"
         input_channels: 5
-        num_classes: 1
         dropout_rate: 0.2
         pretrained: true
-        freeze_backbone: false
+        # num_classes: 1
+        # freeze_backbone: false
     
     # 损失函数：使用Focal Loss处理类别不平衡
     loss_config:
@@ -120,27 +120,22 @@ trainer:
   params:
     # 基础训练配置
     max_epochs: 100
-    accelerator: "auto"         # 自动检测GPU/CPU
-    devices: "auto"             # 自动检测设备数量
-    precision: "16-mixed"       # 使用混合精度训练，节省显存
+    accelerator: "gpu"         # 使用GPU
+    devices: 1                 # 使用1个GPU
+    precision: "32-true"       # 使用32位精度，不使用混合精度
     
     # 验证配置
-    val_check_interval: 1.0     # 每个epoch后验证
-    check_val_every_n_epoch: 1
+    val_check_interval: 1.0     # 每个epoch后验证，每个epoch验证一次
+    check_val_every_n_epoch: 1  # 每个epoch验证一次
     
     # 梯度配置
-    gradient_clip_val: 1.0
-    accumulate_grad_batches: 1
+    gradient_clip_val: 1.0      # 梯度裁剪
+    accumulate_grad_batches: 1  # 梯度累积
     
     # 性能优化
-    enable_progress_bar: true
-    enable_model_summary: true
+    enable_progress_bar: true   # 显示进度条
+    enable_model_summary: true  # 显示模型摘要
     deterministic: false        # 为了性能，不要求完全确定性
-    
-    # 调试选项（生产环境中可以关闭）
-    fast_dev_run: false         # 快速开发运行，只运行几个batch
-    limit_train_batches: 1.0    # 限制训练batch数量（1.0表示使用全部）
-    limit_val_batches: 1.0      # 限制验证batch数量
 
 # === 回调函数配置 ===
 # 定义训练过程中的监控、保存和控制策略
@@ -149,32 +144,30 @@ callbacks:
   model_checkpoint:
     target: pytorch_lightning.callbacks.ModelCheckpoint
     params:
-      dirpath: "outputs/checkpoints/optical_baseline"
+      dirpath: "lightning_landslide/outputs/checkpoints/optical_swin_tiny_baseline"
       filename: "best-{epoch:02d}-{val_f1:.4f}"
-      monitor: "val_f1"
-      mode: "max"
-      save_top_k: 3
-      save_last: true
-      auto_insert_metric_name: false
-      verbose: true
+      monitor: "val_f1"         # 监控指标
+      mode: "max"               # 最大值
+      save_top_k: 1              # 保存最好的1个模型
+      save_last: true            # 保存最后一个模型
+      verbose: true              # 显示详细信息
   
   # 早停：防止过拟合
   early_stopping:
     target: pytorch_lightning.callbacks.EarlyStopping
     params:
-      monitor: "val_f1"
-      mode: "max"
-      patience: 15
-      min_delta: 0.001
-      verbose: true
-      strict: false             # 非严格模式，允许指标偶尔不存在
+      monitor: "val_f1"         # 监控指标
+      mode: "max"               # 最大值
+      patience: 20              # 早停次数
+      verbose: true              # 显示详细信息
+      strict: false              # 非严格模式，允许指标偶尔不存在
   
   # 学习率监控：追踪学习率变化
   lr_monitor:
     target: pytorch_lightning.callbacks.LearningRateMonitor
     params:
-      logging_interval: "step"
-      log_momentum: false
+      logging_interval: "step"  # 记录学习率变化
+      log_momentum: false        # 不记录动量
   
   # 自定义回调：模型统计和可视化
   metrics_logger:
@@ -188,43 +181,42 @@ loggers:
   tensorboard:
     target: pytorch_lightning.loggers.TensorBoardLogger
     params:
-      save_dir: "outputs/logs"
-      name: "optical_baseline"
-      version: null             # 自动生成版本号
-      log_graph: false          # 不记录计算图（节省空间）
-      default_hp_metric: false  # 不记录默认超参数指标
+      save_dir: "lightning_landslide/logs/optical_swin_tiny_baseline"
+      name: "optical_swin_tiny_baseline"
+      log_graph: true           # 记录计算图
+      default_hp_metric: true   # 记录默认超参数指标
   
   # 可选：添加W&B日志记录器（如果需要在线追踪）
-  # wandb:
-  #   target: pytorch_lightning.loggers.WandbLogger
-  #   params:
-  #     project: "mm-landslide-net"
-  #     name: "optical_baseline_swin_tiny"
-  #     tags: ["optical", "baseline", "swin"]
+  wandb:
+    target: pytorch_lightning.loggers.WandbLogger
+    params:
+      project: "mm-landslide-net"  # 项目名称
+      name: "optical_swin_tiny_baseline"  # 实验名称
+      tags: ["optical", "baseline", "swin"]  # 标签
 
 # === 输出目录配置 ===
 # 定义所有输出文件的保存位置
 outputs:
   # 核心输出目录
-  checkpoint_dir: "outputs/checkpoints/optical_baseline"
-  log_dir: "outputs/logs/optical_baseline"
-  predictions_dir: "outputs/predictions/optical_baseline"
-  figures_dir: "outputs/figures/optical_baseline"
+  checkpoint_dir: "lightning_landslide/outputs/checkpoints/optical_swin_tiny_baseline"
+  log_dir: "lightning_landslide/logs/optical_swin_tiny_baseline"
+  predictions_dir: "lightning_landslide/outputs/predictions/optical_swin_tiny_baseline"
+  figures_dir: "lightning_landslide/outputs/figures/optical_swin_tiny_baseline"
   
   # 结果文件命名
-  result_prefix: "optical_baseline"
+  result_prefix: "optical_swin_tiny_baseline"
   timestamp_format: "%Y%m%d_%H%M%S"
 
 # === 硬件和性能配置 ===
 compute:
   # GPU配置
   gpu_ids: [0]                  # 使用的GPU列表
-  mixed_precision: true         # 启用混合精度训练
+  mixed_precision: false        # 不启用混合精度训练
   
   # 内存优化
   find_unused_parameters: false # DDP时是否查找未使用参数
-  sync_batchnorm: false         # 是否同步批标准化
-  
+  sync_batchnorm: true          # 是否同步批标准化
+
   # 性能监控
   profiler: null                # 性能分析器：null/simple/advanced/pytorch
   
@@ -234,12 +226,6 @@ experiment_config:
   # 数据平衡策略
   class_balance_strategy: "focal_loss"  # focal_loss/weighted_sampling/cost_sensitive
   
-  # 模型复杂度控制
-  model_complexity: "tiny"              # tiny/small/base/large
-  
-  # 训练策略
-  training_strategy: "standard"         # standard/progressive/curriculum
-  
   # 评估策略
   evaluation_strategy:
     use_tta: true                       # 测试时增强
@@ -248,11 +234,11 @@ experiment_config:
   
   # 结果报告配置
   reporting:
-    generate_confusion_matrix: true
-    generate_roc_curve: true
-    generate_precision_recall_curve: true
-    save_predictions: true
-    save_model_summary: true
+    generate_confusion_matrix: true  # 生成混淆矩阵
+    generate_roc_curve: true         # 生成ROC曲线
+    generate_precision_recall_curve: true  # 生成精确率-召回率曲线
+    save_predictions: true           # 保存预测结果
+    save_model_summary: true         # 保存模型摘要
 
 # === 调试和开发配置 ===
 # 开发和调试时的特殊设置
@@ -274,15 +260,10 @@ debug:
 # 便于后续分析和比较的实验记录
 experiment_log:
   expected_metrics:
-    val_f1: 0.80                # 预期的F1分数
+    val_f1: 0.90                # 预期的F1分数
     val_accuracy: 0.85          # 预期的准确率
-    training_time_hours: 2.0    # 预期的训练时间
+    training_time_hours: 1.0    # 预期的训练时间
   
   baseline_comparison:
-    previous_best_f1: 0.75      # 之前最好的F1分数
+    previous_best_f1: 0.85      # 之前最好的F1分数
     improvement_target: 0.05    # 目标改进幅度
-  
-  resource_requirements:
-    min_gpu_memory_gb: 8        # 最小GPU内存需求
-    estimated_training_time: "2-3 hours"
-    disk_space_gb: 5            # 磁盘空间需求

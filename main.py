@@ -1,20 +1,3 @@
-"""
-MM-LandslideNet 统一项目入口点 (重构版)
-
-这是参考latent-diffusion设计的新版本入口点。核心思想是"配置驱动一切"：
-- 所有组件都通过配置文件创建
-- 支持多种任务（训练、测试、推理等）
-- 极简的代码逻辑，最大的灵活性
-
-设计哲学：
-"让配置文件成为唯一的变化点" - 添加新模型、新数据集或新训练策略时，
-只需要编写配置文件，无需修改任何Python代码。
-
-教学要点：
-对比您原来的main.py，新版本的核心改进是用"配置驱动"替代了"代码驱动"。
-这种设计让框架具备了类似latent-diffusion的强大灵活性。
-"""
-
 import os
 import sys
 import argparse
@@ -29,8 +12,8 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 # 抑制不必要的警告
-warnings.filterwarnings("ignore", ".*does not have many workers.*")
-warnings.filterwarnings("ignore", ".*The dataloader.*")
+# warnings.filterwarnings("ignore", ".*does not have many workers.*")
+# warnings.filterwarnings("ignore", ".*The dataloader.*")
 
 import torch
 import pytorch_lightning as pl
@@ -46,9 +29,6 @@ logger = get_project_logger(__name__)
 class ExperimentRunner:
     """
     实验运行器
-
-    这个类负责协调整个实验的执行流程。它就像一个指挥家，
-    根据配置文件的"乐谱"来指挥各个组件协同工作。
 
     与您原来的TaskRunner相比，这个版本更加专注和简化：
     - 只有一个核心职责：运行实验
@@ -72,18 +52,15 @@ class ExperimentRunner:
     def _load_config(self) -> DictConfig:
         """
         加载和验证配置文件
-
-        这里我们做两件事：
-        1. 加载YAML配置文件
-        2. 验证配置的基本结构
         """
         if not self.config_path.exists():
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
 
+        # 打印路径，加载配置文件
         logger.info(f"Loading config from: {self.config_path}")
         config = OmegaConf.load(self.config_path)
 
-        # 验证配置结构
+        # 验证配置结构，确保配置文件的结构是正确的
         if not validate_config_structure(config):
             raise ValueError("Invalid configuration structure")
 
@@ -96,11 +73,12 @@ class ExperimentRunner:
 
         包括日志、随机种子、输出目录等基础设施。
         """
-        # 设置日志
+        # 设置日志，getattr的作用是获取config中的log_level，如果没有则使用INFO
         log_level = getattr(logging, self.config.get("log_level", "INFO").upper())
         setup_logging(level=log_level)
 
-        # 设置随机种子
+        # 设置随机种子，seed_everything的作用是设置随机种子，并设置torch.manual_seed和torch.cuda.manual_seed，
+        # workers为True时，会设置torch.utils.data.DataLoader的num_workers为1
         if "seed" in self.config:
             pl.seed_everything(self.config.seed, workers=True)
             logger.info(f"Set random seed to {self.config.seed}")
@@ -112,18 +90,25 @@ class ExperimentRunner:
         self._save_config()
 
     def _create_output_dirs(self):
-        """创建实验需要的输出目录"""
+        """创建实验需要的输出目录，outputs路径项目可能包括log_dir, predictions_dir, checkpoints_dir"""
         if "outputs" in self.config:
             for dir_name, dir_path in self.config.outputs.items():
                 Path(dir_path).mkdir(parents=True, exist_ok=True)
                 logger.debug(f"Created directory: {dir_path}")
 
     def _save_config(self):
-        """保存配置文件到实验目录（确保可重现性）"""
+        """保存配置文件到实验目录（确保可重现性），如果outputs在config中，则保存config.yaml到outputs.log_dir目录下，
+        如果outputs.log_dir不存在，则创建log_dir目录"""
         if "outputs" in self.config and "log_dir" in self.config.outputs:
-            config_save_path = Path(self.config.outputs.log_dir) / "config.yaml"
+            from datetime import datetime
+
+            timestamp = datetime.now().strftime(self.config.outputs.get("timestamp_format", "%Y%m%d_%H%M%S"))
+            config_save_path = Path(self.config.outputs.log_dir) / f"config_{timestamp}.yaml"
+
+            # parent是log_dir的父目录，如果log_dir不存在，则创建log_dir目录
             config_save_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # 保存config.yaml文件
             with open(config_save_path, "w") as f:
                 OmegaConf.save(self.config, f)
 
@@ -170,7 +155,6 @@ class ExperimentRunner:
         logger.info("Initializing training components...")
 
         # 🎯 核心改进：用配置创建所有组件
-        # 不再需要复杂的工厂类或if-else判断
         model = instantiate_from_config(self.config.model)
         data_module = instantiate_from_config(self.config.data)
 
@@ -582,25 +566,25 @@ def create_parser() -> argparse.ArgumentParser:
         description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # 训练模型
-  python main.py train configs/experiment/optical_baseline.yaml
-  
-  # 测试模型  
-  python main.py test configs/experiment/optical_baseline.yaml
-  
-  # 运行推理
-  python main.py predict configs/experiment/optical_baseline.yaml
-  
-  # 验证模型
-  python main.py validate configs/experiment/optical_baseline.yaml
+                Examples:
+                # 训练模型
+                python main.py train lightning_landslide/configs/experiment/optical_baseline.yaml
+                
+                # 测试模型  
+                python main.py test configs/experiment/optical_baseline.yaml
+                
+                # 运行推理
+                python main.py predict configs/experiment/optical_baseline.yaml
+                
+                # 验证模型
+                python main.py validate configs/experiment/optical_baseline.yaml
 
-Configuration-First Design:
-  This framework follows the "configuration-first" principle inspired by 
-  latent-diffusion. All model architectures, training strategies, and data 
-  processing pipelines are defined in YAML configuration files, making the
-  framework extremely flexible and maintainable.
-        """,
+                Configuration-First Design:
+                This framework follows the "configuration-first" principle inspired by 
+                latent-diffusion. All model architectures, training strategies, and data 
+                processing pipelines are defined in YAML configuration files, making the
+                framework extremely flexible and maintainable.
+                """,
     )
 
     # 主要参数
