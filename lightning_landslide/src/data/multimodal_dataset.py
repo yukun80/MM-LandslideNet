@@ -31,7 +31,6 @@ class MultiModalDataset(Dataset):
         exclude_ids_file: Optional[Union[str, Path]] = None,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
-        # channels: List[int] = [0, 1, 2, 3],  # R, G, B, NIR的索引
         compute_ndvi: bool = True,
         cache_data: bool = True,
         validate_data: bool = True,
@@ -69,7 +68,6 @@ class MultiModalDataset(Dataset):
         # 数据处理配置
         self.transform = transform
         self.target_transform = target_transform
-        # self.channels = channels
         self.compute_ndvi = compute_ndvi
         self.cache_data = cache_data
 
@@ -103,7 +101,7 @@ class MultiModalDataset(Dataset):
         self._compute_data_stats()
 
         logger.info(f"MultiModalDataset initialized with {len(self)} samples")
-        logger.info(f"Channels: {self.channels}, NDVI: {self.compute_ndvi}")
+        logger.info(f"Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
         logger.info(f"Final channel count: {self.num_channels}")
 
     def _load_data_index(self) -> pd.DataFrame:
@@ -309,7 +307,7 @@ class MultiModalDataset(Dataset):
                     continue
 
                 # 检查通道数
-                if data.shape[0] < max(self.channels) + 1:
+                if data.shape[0] < self.num_channels + 1:
                     invalid_files.append(f"{sample_id}: insufficient channels {data.shape[0]}")
                     continue
 
@@ -341,7 +339,7 @@ class MultiModalDataset(Dataset):
         self.stats = {
             "total_samples": len(self.data_index),
             "num_channels": self.num_channels,
-            "channels": self.channels,
+            "active_channels": self.active_channels,
             "compute_ndvi": self.compute_ndvi,
         }
 
@@ -422,7 +420,7 @@ class MultiModalDataset(Dataset):
             fallback_label = torch.tensor(0, dtype=torch.long)
             return fallback_data, fallback_label
 
-    def _compute_ndvi(self, optical_channels: List[np.ndarray]) -> np.ndarray:
+    def _compute_ndvi(self, red: np.ndarray, nir: np.ndarray) -> np.ndarray:
         """
         计算归一化植被指数 (NDVI)
 
@@ -435,17 +433,19 @@ class MultiModalDataset(Dataset):
         3. 时间序列NDVI变化能指示地表扰动
 
         Args:
-            optical_channels: 光学通道列表，顺序为 [R, G, B, NIR]
+            red: 红光通道
+            nir: 近红外通道
 
         Returns:
             NDVI数组，形状与输入通道相同
+
+        调用函数：
+            _load_sample_data
         """
-        if len(optical_channels) < 4:
-            raise ValueError("Need at least 4 channels to compute NDVI (R, G, B, NIR)")
 
         # 提取红光和近红外通道
-        red = optical_channels[0].astype(np.float32)  # Red通道
-        nir = optical_channels[3].astype(np.float32)  # NIR通道
+        red = red.astype(np.float32)  # Red通道
+        nir = nir.astype(np.float32)  # NIR通道
 
         # 计算NDVI，添加小常数避免除零
         epsilon = 1e-8
@@ -489,7 +489,7 @@ class MultiModalDataset(Dataset):
 
             # 各通道统计
             channel_stats = {}
-            channel_names = [f"ch_{i}" for i in self.channels]
+            channel_names = [f"ch_{i}" for i in range(self.num_channels)]
             if self.compute_ndvi:
                 channel_names.append("ndvi")
 

@@ -70,6 +70,15 @@ class MetricsLogger(Callback):
             "learning_rate": trainer.optimizers[0].param_groups[0]["lr"],
         }
 
+        # 将trainer.logged_metrics转换为字典
+        for key, value in trainer.logged_metrics.items():
+            if isinstance(value, torch.Tensor):
+                current_metrics[key] = value.item()  # 转换tensor为float
+            elif hasattr(value, "item"):  # 处理numpy等其他数值类型
+                current_metrics[key] = value.item()
+            else:
+                current_metrics[key] = value
+
         self.metrics_history.append(current_metrics)
 
         # 更新最佳指标
@@ -145,5 +154,3 @@ class MetricsLogger(Callback):
                 )
 
             logger.info(f"Metrics history saved to {metrics_file}")
-
-

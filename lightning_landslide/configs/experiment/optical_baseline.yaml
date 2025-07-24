@@ -63,8 +63,9 @@ model:
     scheduler_config:
       type: "cosine_with_warmup"
       cosine_params:
-        warmup_epochs: 5
-        min_lr_ratio: 0.01
+        T_0: 10          # 第一次重启前的epoch数（通常设为总epoch数的1/5到1/3）
+        T_mult: 2        # 每次重启后周期长度的倍数
+        eta_min: 1e-6    # 最小学习率（基学习率的1/100）
     
     # 评估指标
     metrics_config:

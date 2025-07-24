@@ -62,6 +62,8 @@ class FocalLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        targets = targets.float()  # 将Long类型转换为Float类型
+
         # 计算二元交叉熵
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
 
