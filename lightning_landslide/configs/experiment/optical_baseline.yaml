@@ -21,7 +21,7 @@ notes: |
   Expected to achieve ~80% F1 score based on preliminary experiments.
 
 # === 全局设置 ===
-seed: 42                    # 随机种子，确保实验可重现
+seed: 3407                    # 随机种子，确保实验可重现
 log_level: "INFO"           # 日志级别：DEBUG/INFO/WARNING/ERROR
 
 # === 模型配置 ===
@@ -40,6 +40,14 @@ model:
         # num_classes: 1
         # freeze_backbone: false
     
+    # === 分类头配置 ===
+    # 定义从特征到最终预测的映射
+    classifier_config:
+      type: "simple"              # 分类头类型：simple/mlp/attention
+      hidden_dim: null            # MLP分类头的隐藏维度（simple类型时忽略）
+      use_batch_norm: false       # 是否使用批标准化
+      activation: "relu"          # 分类头中的激活函数
+
     # 损失函数：使用Focal Loss处理类别不平衡
     loss_config:
       type: "focal"
@@ -75,16 +83,30 @@ data:
     train_csv: "dataset/Train.csv"
     test_csv: "dataset/Test.csv"
     exclude_ids_file: "dataset/data_check/exclude_ids.json"
-    
+
+    # === 通道配置 ===
+    # 定义多模态数据的通道使用策略
+    channel_groups:
+      optical: [0, 1, 2, 3]          # R, G, B, NIR - 光学遥感数据
+      sar_amplitude: [4, 5, 8, 9]    # SAR幅度图 - 雷达数据的强度信息
+      sar_difference: [6, 7, 10, 11] # SAR差值图 - 时间变化信息  
+      derived: ["ndvi"]              # 派生指标 - 计算得出的植被指数
+
+    # === 使用模式定义 - 为不同的实验提供预设的通道组合 ===
+    usage_modes:
+      optical_only:
+        groups: ["optical", "derived"]
+        description: "仅使用光学数据，适合基线实验"
+      
+      # full_multimodal:
+      #   groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
+      #   description: "使用全部模态，适合最终模型"
+      
+      # sar_focused:
+      #   groups: ["sar_amplitude", "sar_difference"]
+      #   description: "专注SAR数据，用于消融实验"
+
     # 通道配置：仅使用光学数据
-    channel_config:
-      total_channels: 13
-      channel_groups:
-        optical: [0, 1, 2, 3]
-        derived: ["ndvi"]
-      usage_modes:
-        optical_only:
-          groups: ["optical", "derived"]
     active_mode: "optical_only"
     
     # 数据加载配置
@@ -95,7 +117,26 @@ data:
     # 数据分割
     val_split: 0.2
     stratify: true
-    
+    shuffle_train: true
+
+    # === 数据预处理配置 ===
+    preprocessing:
+      # 标准化参数 - 基于您的数据统计计算得出
+      normalization:
+        # 12个原始通道的均值和标准差
+        means: [1849.282, 1953.906, 1896.493, 3291.47, -9.624, -17.110, 
+                -0.699, -0.483, -10.671, -18.442, 0.248, -0.234]
+        stds: [1414.462, 1338.292, 1342.528, 1448.362, 7.904, 9.245, 
+              4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
+      
+      # NDVI计算配置
+      ndvi_computation:
+        red_channel_idx: 0      # 红光通道索引
+        nir_channel_idx: 3      # 近红外通道索引
+        epsilon: 1e-8           # 避免除零的小值
+        clip_range: [-1, 1]     # NDVI值裁剪范围
+
+    # === 数据增强配置 ===
     # 数据增强：适度的增强策略
     augmentation:
       train:
