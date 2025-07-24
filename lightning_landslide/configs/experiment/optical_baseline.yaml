@@ -43,21 +43,13 @@ model:
     # 损失函数：使用Focal Loss处理类别不平衡
     loss_config:
       type: "focal"
-      focal_params:
-        alpha: 1.0
-        gamma: 2.0
+      focal_params: {alpha: 1.0, gamma: 2.0}
     
     # 优化器：AdamW with differential learning rates
     optimizer_config:
       type: "adamw"
-      adamw_params:
-        lr: 1e-4
-        weight_decay: 1e-4
-        betas: [0.9, 0.999]
-      differential_lr:
-        enable: true
-        backbone_lr_ratio: 0.1
-        classifier_lr_ratio: 1.0
+      adamw_params: {lr: 1e-4, weight_decay: 1e-4, betas: [0.9, 0.999]}
+      differential_lr: {enable: true, backbone_lr_ratio: 0.1, classifier_lr_ratio: 1.0}
     
     # 学习率调度器：预热 + 余弦退火
     scheduler_config:

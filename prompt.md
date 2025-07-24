@@ -1,46 +1,19 @@
-### **给AI编程助手的专业级提示词 (重构为 InternImage)**
+## 角色
+你是一个资深的计算机视觉和深度学习算法工程师，始终遵循第一性原理和奥卡姆剃刀原则。
 
-Hello,
+## 背景
+当前正在一场面向多模态遥感图像滑坡场景分类竞赛。当前代码库模型构建是已有的尝试，但存在一些问题。
+当前我的模型构建在lightning_landslide/src/models/optical_swin.py。为了兼容光学波段和其他波段，数据集类在lightning_landslide/src/data/multimodal_dataset.py。配置文件分散在lightning_landslide/configs路径下。
 
-I need you to act as an expert AI software engineer. Your task is to refactor the existing codebase in the `@mm_intern_image_src/**` directory. The goal is to replace the current `ConvNeXtV2` backbone with the `InternImage-T` backbone, aligning the implementation with our original design goals.
 
-The current code is functional but uses a placeholder backbone. You will modify it to use the correct, higher-performance model available in the `timm` library.
+## 任务1
+现在，我发现了一个使用pytorch lightning的深度学习项目，地址为：https://github.com/CompVis/latent-diffusion。这个代码库在训练的时候可以自动保存每一次训练时候的配置和权重以及结果，并且有着良好的扩展性，可以通过配置文件和算法框架设计方便的添加不同模型以及训练配置，实现高效的多方法验证。这对于 kaggle 类竞赛需要构建不同的模型结构以及训练配置的测试至关重要。请你对latent-diffusion 代码库进行充分的研究，理解这个框架是如何实现的。
 
----
+## 任务2
+我想在lightning_landslide路径下模仿latent-diffusion代码库中的算法框架，构建一个可扩展的多模态分类框架来开展这个竞赛任务。通过配置文件设置来构建不同的模型结构和训练配置，并且兼容legacy/optical_src中的光学通道分类模型。因此当前代码和类的名字都是multimodal，而不是optical，这是因为我想通过配置文件设置使用数据的波段组合，这样也兼容纯光学波段数据。当前我已经下载了预训练权重到pretrained路径。
 
-### **Refactoring Plan: ConvNeXtV2 to InternImage-T**
+请你分析当前 lightning_landslide 框架要成功执行swin 模型训练、测试、预测Pipline还需要如何完善代码？请给出详细的代码修改建议。
 
-Please perform the following targeted modifications on the files within the `@mm_intern_image_src/` directory.
 
-**Task 1: Update Model Configuration (`config.py`)**
-
-* **File:** `@mm_intern_image_src/config.py`
-* **Action:** Modify the `Config` class to use the parameters for `InternImage-T`.
-  * Change `BACKBONE_NAME` to `"internimage_t_1k_224"`.
-  * Change `BACKBONE_FEATURE_DIM` from `1024` to `512`.
-
-**Task 2: Refactor the Model Architecture (`models.py`)**
-
-* **File:** `@mm_intern_image_src/models.py`
-* **Actions:**
-  1. **Update `MMInternImageTNF.__init__`:**
-     * Change the default value for `backbone_name` to `"internimage_t_1k_224"`.
-     * Change the default value for `feature_dim` to `512`.
-  2. **Update `TNFFusionBlock.__init__`:**
-     * Change the default value for `feature_dim` to `512`.
-  3. **Update `_create_backbone` method:**
-     * The logic for creating the model via `timm.create_model` is largely correct, but ensure it handles `"internimage_t_1k_224"` gracefully.
-  4. **Crucially, refactor the `_modify_input_layer` method:**
-     * The current implementation is for `ConvNeXt`. You must adapt it for `InternImage`.
-     * The first convolutional layer in `timm`'s `InternImage` is `model.stem.conv1`. Your code must find and modify this specific layer.
-     * Preserve the weight initialization logic: when using pretrained weights for the optical branch (`in_channels=5`), copy the original RGB weights and then average them to initialize the new input channels to preserve the pretrained knowledge as much as possible.
-
-**Task 3: Update Package Information (`__init__.py`)**
-
-* **File:** `@mm_intern_image_src/__init__.py`
-* **Action:** Update the model's description to reflect the correct backbone.
-  * In the `get_model_info` function, change the value for the `"backbone"` key from `"ConvNeXt V2 (InternImage replacement)"` to `"InternImage-T"`.
-
----
-
-Please apply these changes to the existing files. This is a refactoring task, so you should modify the code in place, not create new files from scratch.
+## 任务1
+首先请你对legacy/optical_src路径下的算法框架进行充分的研究，理解当前使用swin和光学波段数据构建的分类模型。当前optical_src中我使用了pytorch构建算法。然而，我发现使用pytorch需要花大量精力维护训练和测试等大量工程代码。因此，我决定使用pytorch lightning和yaml配置文件构建一个可扩展的框架。

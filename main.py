@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MM-LandslideNet 统一项目入口点 (重构版)
 

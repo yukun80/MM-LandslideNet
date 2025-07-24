@@ -11,6 +11,7 @@ from .base import BaseModel
 
 """
 python -m lightning_landslide.src.models.optical_swin
+torch版本模型构建
 """
 
 logger = logging.getLogger(__name__)  # 日志记录器, __name__ 是模块名
