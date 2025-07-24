@@ -7,7 +7,7 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "optical_baseline_swin_tiny"
+experiment_name: "optical_swin_tiny_0724-1"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
 version: "1.0.0"
 tags: ["optical", "baseline", "swin", "binary_classification"]
@@ -33,10 +33,12 @@ model:
     base_model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
-        model_name: "swin_tiny_patch4_window7_224"
+        model_name: "swinv2_small_patch4_window16_256"
         input_channels: 5
-        dropout_rate: 0.2
         pretrained: true
+        dropout_rate: 0.2
+        pretrained_path: "pretrained/swinv2_small_patch4_window16_256.pth"
+        img_size: 256
         # num_classes: 1
         # freeze_backbone: false
     
@@ -141,6 +143,8 @@ data:
     # 数据增强：适度的增强策略
     augmentation:
       train:
+        resize: 256
+        # 几何增强
         geometric:
           random_flip: true
           h_flip_prob: 0.5
@@ -148,12 +152,13 @@ data:
           random_rotation: true
           rotation_prob: 0.3
           rotation_degrees: [-10, 10]
+        # 光谱增强
         spectral:
           spectral_noise: true
           noise_std: 0.005
           noise_prob: 0.3
-      val: {}
-      test: {}
+      val: {resize: 256}
+      test: {resize: 256}
 
 # === 训练器配置 ===
 # PyTorch Lightning Trainer的配置
@@ -223,8 +228,6 @@ loggers:
   tensorboard:
     target: pytorch_lightning.loggers.TensorBoardLogger
     params:
-      save_dir: "lightning_landslide/logs/"
-      name: "optical_swin_tiny_baseline"
       log_graph: true           # 记录计算图
       default_hp_metric: true   # 记录默认超参数指标
   
@@ -239,15 +242,16 @@ loggers:
 # === 输出目录配置 ===
 # 定义所有输出文件的保存位置
 outputs:
-  # 核心输出目录
-  checkpoint_dir: "lightning_landslide/outputs/checkpoints/optical_swin_tiny_baseline"
-  log_dir: "lightning_landslide/logs/optical_swin_tiny_baseline"
-  predictions_dir: "lightning_landslide/outputs/predictions/optical_swin_tiny_baseline"
-  figures_dir: "lightning_landslide/outputs/figures/optical_swin_tiny_baseline"
-  
-  # 结果文件命名
-  result_prefix: "optical_swin_tiny_baseline"
-  timestamp_format: "%Y%m%d_%H%M%S"
+  base_output_dir: "lightning_landslide/exp"
+
+  # 路径会保存到experiment_name
+  checkpoint_subdir: "checkpoints"
+  log_subdir: "log"
+  predictions_subdir: "predictions"
+  figures_subdir: "figures"
+
+  # result_prefix: "optical_swin_tiny_baseline"
+  # timestamp_format: "%Y%m%d_%H%M%S"
 
 # === 硬件和性能配置 ===
 compute:

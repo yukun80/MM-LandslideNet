@@ -38,83 +38,6 @@ from .optical_swin import OpticalSwinModel
 logger = logging.getLogger(__name__)
 
 
-class FocalLoss(nn.Module):
-    """
-    Focal Loss实现 - 专门处理类别不平衡问题
-
-    Focal Loss是Facebook AI Research提出的损失函数，特别适合处理
-    极度不平衡的分类问题。在遥感滑坡检测中，负样本（非滑坡）通常
-    远多于正样本（滑坡），这正是Focal Loss的用武之地。
-
-    核心思想：
-    1. 降低易分类样本的权重（让模型专注于困难样本）
-    2. 增加少数类的权重（解决类别不平衡）
-
-    公式：FL(p_t) = -α(1-p_t)^γ * log(p_t)
-    其中：p_t是模型对正确类别的预测概率
-    α控制类别权重，γ控制困难样本的权重
-    """
-
-    def __init__(self, alpha: float = 1.0, gamma: float = 2.0, reduction: str = "mean"):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        targets = targets.float()  # 将Long类型转换为Float类型
-
-        # 计算二元交叉熵
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-
-        # 计算预测概率
-        p_t = torch.exp(-bce_loss)
-
-        # 应用focal weight: (1 - p_t)^gamma
-        focal_weight = (1 - p_t) ** self.gamma
-
-        # 应用类别权重alpha
-        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-
-        # 计算focal loss
-        focal_loss = alpha_t * focal_weight * bce_loss
-
-        if self.reduction == "mean":
-            return focal_loss.mean()
-        elif self.reduction == "sum":
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-
-class DiceLoss(nn.Module):
-    """
-    Dice Loss实现 - 适用于分割任务的损失函数
-
-    Dice Loss基于Dice系数（也称为F1分数），特别适合处理
-    分割任务中的类别不平衡问题。在滑坡检测中，它能够更好地
-    关注预测区域与真实区域的重叠程度。
-    """
-
-    def __init__(self, smooth: float = 1.0):
-        super().__init__()
-        self.smooth = smooth
-
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # 应用sigmoid获得概率
-        inputs = torch.sigmoid(inputs)
-
-        # 展平张量
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        # 计算交集和并集
-        intersection = (inputs * targets).sum()
-        dice_coeff = (2.0 * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
-
-        return 1 - dice_coeff
-
-
 class LandslideClassificationModule(pl.LightningModule):
     """
     滑坡检测的核心Lightning模块
@@ -599,3 +522,80 @@ class LandslideClassificationModule(pl.LightningModule):
         logger.info(f"  Classifier LR: {classifier_lr}")
 
         return param_groups
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss实现 - 专门处理类别不平衡问题
+
+    Focal Loss是Facebook AI Research提出的损失函数，特别适合处理
+    极度不平衡的分类问题。在遥感滑坡检测中，负样本（非滑坡）通常
+    远多于正样本（滑坡），这正是Focal Loss的用武之地。
+
+    核心思想：
+    1. 降低易分类样本的权重（让模型专注于困难样本）
+    2. 增加少数类的权重（解决类别不平衡）
+
+    公式：FL(p_t) = -α(1-p_t)^γ * log(p_t)
+    其中：p_t是模型对正确类别的预测概率
+    α控制类别权重，γ控制困难样本的权重
+    """
+
+    def __init__(self, alpha: float = 1.0, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        targets = targets.float()  # 将Long类型转换为Float类型
+
+        # 计算二元交叉熵
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+
+        # 计算预测概率
+        p_t = torch.exp(-bce_loss)
+
+        # 应用focal weight: (1 - p_t)^gamma
+        focal_weight = (1 - p_t) ** self.gamma
+
+        # 应用类别权重alpha
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+
+        # 计算focal loss
+        focal_loss = alpha_t * focal_weight * bce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class DiceLoss(nn.Module):
+    """
+    Dice Loss实现 - 适用于分割任务的损失函数
+
+    Dice Loss基于Dice系数（也称为F1分数），特别适合处理
+    分割任务中的类别不平衡问题。在滑坡检测中，它能够更好地
+    关注预测区域与真实区域的重叠程度。
+    """
+
+    def __init__(self, smooth: float = 1.0):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # 应用sigmoid获得概率
+        inputs = torch.sigmoid(inputs)
+
+        # 展平张量
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        # 计算交集和并集
+        intersection = (inputs * targets).sum()
+        dice_coeff = (2.0 * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+
+        return 1 - dice_coeff

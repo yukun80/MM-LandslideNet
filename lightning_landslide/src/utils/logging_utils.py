@@ -47,23 +47,19 @@ def setup_logging(
     console_handler.setLevel(level)
 
     if use_colors:
-        try:
-            # 彩色日志格式
-            color_format = "%(log_color)s%(asctime)s - %(name)s - %(levelname)s%(reset)s - %(message)s"
-            formatter = colorlog.ColoredFormatter(
-                color_format,
-                datefmt="%Y-%m-%d %H:%M:%S",
-                log_colors={
-                    "DEBUG": "cyan",
-                    "INFO": "green",
-                    "WARNING": "yellow",
-                    "ERROR": "red",
-                    "CRITICAL": "red,bg_white",
-                },
-            )
-        except ImportError:
-            # 如果colorlog不可用，使用标准格式
-            formatter = logging.Formatter(format_string, datefmt="%Y-%m-%d %H:%M:%S")
+        # 彩色日志格式
+        color_format = "%(log_color)s%(asctime)s - %(name)s - %(levelname)s%(reset)s - %(message)s"
+        formatter = colorlog.ColoredFormatter(
+            color_format,
+            datefmt="%Y-%m-%d %H:%M:%S",
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "red,bg_white",
+            },
+        )
     else:
         formatter = logging.Formatter(format_string, datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -126,4 +122,3 @@ class TqdmLoggingHandler(logging.Handler):
         except ImportError:
             # 如果tqdm不可用，使用标准输出
             print(self.format(record))
-

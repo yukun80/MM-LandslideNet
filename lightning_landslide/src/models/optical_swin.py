@@ -29,10 +29,12 @@ class OpticalSwinModel(BaseModel):
 
     def __init__(
         self,
-        model_name: str = "swin_tiny_patch4_window7_224",
+        model_name: str = "swinv2_small_patch4_window12_256",
         input_channels: int = 5,
         pretrained: bool = True,
         dropout_rate: float = 0.2,
+        pretrained_path: Optional[str] = None,  # 新增：本地权重路径
+        img_size: int = 256,  # 新增：图像尺寸
     ):
         super().__init__()
 
@@ -41,35 +43,70 @@ class OpticalSwinModel(BaseModel):
         self.input_channels = input_channels
         self.pretrained = pretrained
         self.dropout_rate = dropout_rate
+        self.img_size = img_size  # 保存图像尺寸
 
         logger.info(f"Initializing OpticalSwinModel with {model_name}")
+        logger.info(f"Target image size: {self.img_size}x{self.img_size}")
 
-        # 创建Swin Transformer骨干网络（保持您原有的配置）
+        # 如果提供了本地路径，则不使用timm的在线预训练
+        use_timm_pretrained = pretrained and (pretrained_path is None)
+
+        # 创建Swin Transformer骨干网络
         self.backbone = timm.create_model(
             model_name,
-            pretrained=pretrained,
-            num_classes=0,  # 移除默认分类头，这样我们可以单独配置
-            global_pool="avg",  # 使用平均池化，产生固定大小的特征向量
+            pretrained=use_timm_pretrained,
+            num_classes=0,
+            global_pool="avg",
         )
 
-        # num_features是Swin Transformer的特征维度，这个信息对于构建分类头至关重要
+        # 如果提供了本地路径，加载本地权重
+        if pretrained_path:
+            self._load_local_weights(pretrained_path)
+
         self.feature_dim = self.backbone.num_features
         logger.info(f"Backbone feature dimension: {self.feature_dim}")
 
-        # 将3通道输入修改为5通道，这个过程需要手动设计处理预训练权重
         self._modify_input_layer()
 
-        # 更新模型信息（用于调试和监控）
         self._model_info.update(
             {
                 "backbone_name": model_name,
                 "input_channels": input_channels,
                 "pretrained": pretrained,
+                "pretrained_path": pretrained_path,
                 "dropout_rate": dropout_rate,
+                "img_size": img_size,
             }
         )
 
         logger.info("OpticalSwinModel initialization completed successfully")
+
+    def _load_local_weights(self, pretrained_path: str):
+        """从本地文件加载预训练权重"""
+        path = Path(pretrained_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Pretrained weights file not found at: {pretrained_path}")
+
+        try:
+            state_dict = torch.load(pretrained_path, map_location="cpu")
+
+            # timm的权重通常在'model'键下
+            if "model" in state_dict:
+                state_dict = state_dict["model"]
+
+            # 加载权重
+            result = self.backbone.load_state_dict(state_dict, strict=False)
+            logger.info(f"Weight loading result: {result}")
+
+            # 检查是否有未加载的键，这对于调试非常重要
+            if result.missing_keys:
+                logger.warning(f"Missing keys: {result.missing_keys}")
+            if result.unexpected_keys:
+                logger.warning(f"Unexpected keys: {result.unexpected_keys}")
+
+        except Exception as e:
+            logger.error(f"Failed to load local weights from {pretrained_path}: {e}")
+            raise
 
     def _modify_input_layer(self) -> None:
         """
@@ -191,38 +228,21 @@ class OpticalSwinModel(BaseModel):
         """
         前向传播
 
-        这个方法完全复制了您原有模型的前向传播逻辑：
-        1. 动态上采样到224x224
-        2. 通过Swin Transformer提取特征
-        3. 返回特征向量（而不是分类结果）
-
-        为什么要上采样？
-        您的数据是64x64，但Swin Transformer在224x224上预训练。
-        上采样让我们能够充分利用预训练权重，获得更好的特征表示。
-
-        Args:
-            x: 输入张量，形状为 (batch_size, 5, 64, 64)
-
-        Returns:
-            特征张量，形状为 (batch_size, feature_dim)
+        这个方法现在使用在初始化时定义的 self.img_size
+        来进行动态上采样。
         """
-        # 检查输入维度
         if x.dim() != 4:
             raise ValueError(f"Expected 4D input (batch, channel, height, width), got {x.dim()}D")
 
         if x.size(1) != self.input_channels:
             raise ValueError(f"Expected {self.input_channels} input channels, got {x.size(1)}")
 
-        # 动态上采样到Swin Transformer的期望输入尺寸
-        current_size = x.shape[-1]  # 假设height和width相同
-        target_size = 224
-
-        if current_size != target_size:
+        # 使用 self.img_size 进行动态上采样
+        target_size = self.img_size
+        if x.shape[-1] != target_size:
             x = F.interpolate(x, size=(target_size, target_size), mode="bilinear", align_corners=False)
 
-        # 通过骨干网络提取特征
         features = self.backbone(x)
-
         return features
 
     def get_feature_dim(self) -> int:

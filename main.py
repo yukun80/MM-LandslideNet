@@ -42,8 +42,9 @@ class ExperimentRunner:
 
         Args:
             config_path: 配置文件路径
-            task: 要执行的任务类型（train/test/predict等）
+            task: 要执行的任务类型（train/predict等）
         """
+        setup_logging(level=logging.INFO)
         self.config_path = Path(config_path)
         self.task = task
         self.config = self._load_config()
@@ -81,7 +82,6 @@ class ExperimentRunner:
         # workers为True时，会设置torch.utils.data.DataLoader的num_workers为1
         if "seed" in self.config:
             pl.seed_everything(self.config.seed, workers=True)
-            logger.info(f"Set random seed to {self.config.seed}")
 
         # 创建输出目录
         self._create_output_dirs()
@@ -90,11 +90,34 @@ class ExperimentRunner:
         self._save_config()
 
     def _create_output_dirs(self):
-        """创建实验需要的输出目录，outputs路径项目可能包括log_dir, predictions_dir, checkpoints_dir"""
-        if "outputs" in self.config:
-            for dir_name, dir_path in self.config.outputs.items():
-                Path(dir_path).mkdir(parents=True, exist_ok=True)
-                logger.debug(f"Created directory: {dir_path}")
+        """
+        根据 experiment_name 动态创建实验输出目录。
+        """
+        # 1. 获取基础路径和实验名称
+        base_dir = Path(self.config.outputs.base_output_dir)
+        experiment_path = base_dir / self.config.experiment_name
+        logger.info(f"所有实验输出将保存到: {experiment_path}")
+
+        # 2. 遍历所有子目录配置，创建目录并更新配置
+        # .items()是字典的一个方法，它会把字典里的每一对“键 (key)”和“值 (value)”拿出来，组成一个一个的元组 (tuple)。
+        for key, subdir_name in list(self.config.outputs.items()):
+            if key.endswith("_subdir"):
+                # 构建完整的目录路径
+                full_path = experiment_path / subdir_name
+                full_path.mkdir(parents=True, exist_ok=True)
+
+                # 生成新的配置键 (例如, 'checkpoint_subdir' -> 'checkpoint_dir')
+                new_key = key.replace("_subdir", "_dir")
+
+                # 将动态生成的完整路径更新回配置对象
+                OmegaConf.update(self.config.outputs, new_key, str(full_path))
+
+                logger.debug(f"创建并配置目录: {new_key} = {full_path}")
+
+        # 3. 清理旧的 subdir 配置（可选，但保持配置整洁）
+        for key in list(self.config.outputs.keys()):
+            if key.endswith("_subdir"):
+                del self.config.outputs[key]
 
     def _save_config(self):
         """保存配置文件到实验目录（确保可重现性），如果outputs在config中，则保存config.yaml到outputs.log_dir目录下，
@@ -130,9 +153,7 @@ class ExperimentRunner:
         # 根据任务类型分发到不同的执行方法
         task_methods = {
             "train": self._run_training,
-            "test": self._run_testing,
             "predict": self._run_prediction,
-            "validate": self._run_validation,
         }
 
         if self.task not in task_methods:
@@ -207,21 +228,25 @@ class ExperimentRunner:
 
     def _create_loggers(self) -> List:
         """
-        创建loggers - 独立的方法，更清晰的职责分离
+        创建loggers，并确保它们使用动态生成的路径。
         """
         loggers = []
 
         if "loggers" not in self.config:
             return loggers
 
+        # 获取我们动态创建的日志目录
+        dynamic_log_dir = self.config.outputs.get("log_dir")
+
         for logger_name, logger_config in self.config.loggers.items():
-            try:
-                lightning_logger = instantiate_from_config(logger_config)
-                loggers.append(lightning_logger)
-                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
-            except Exception as e:
-                logger.error(f"✗ Failed to create logger {logger_name}: {e}")
-                raise
+            effective_config = logger_config.copy()
+            OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
+            logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
+
+            # 使用更新后的配置来实例化
+            lightning_logger = instantiate_from_config(effective_config)
+            loggers.append(lightning_logger)
+            logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
 
         return loggers
 
@@ -596,57 +621,6 @@ class ExperimentRunner:
         print("=" * 80 + "\n")
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """
-    创建命令行参数解析器
-
-    新版本的命令行接口更加简洁，重点突出配置文件的作用。
-    """
-    parser = argparse.ArgumentParser(
-        description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-                Examples:
-                # 训练模型
-                python main.py train lightning_landslide/configs/experiment/optical_baseline.yaml
-                
-                # 测试模型  
-                python main.py test configs/experiment/optical_baseline.yaml
-                
-                # 运行推理
-                python main.py predict configs/experiment/optical_baseline.yaml
-                
-                # 验证模型
-                python main.py validate configs/experiment/optical_baseline.yaml
-
-                Configuration-First Design:
-                This framework follows the "configuration-first" principle inspired by 
-                latent-diffusion. All model architectures, training strategies, and data 
-                processing pipelines are defined in YAML configuration files, making the
-                framework extremely flexible and maintainable.
-                """,
-    )
-
-    # 主要参数
-    parser.add_argument("task", choices=["train", "test", "predict", "validate"], help="Task to execute")
-
-    parser.add_argument("config", type=str, help="Path to configuration file")
-
-    # 可选参数
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
-
-    parser.add_argument("--checkpoint", type=str, help="Path to model checkpoint (overrides config)")
-
-    parser.add_argument(
-        "--override",
-        type=str,
-        nargs="*",
-        help="Override config values (e.g., --override training.max_epochs=100 data.batch_size=32)",
-    )
-
-    return parser
-
-
 def apply_overrides(config: DictConfig, overrides: list) -> DictConfig:
     """
     应用命令行覆盖
@@ -686,13 +660,47 @@ def apply_overrides(config: DictConfig, overrides: list) -> DictConfig:
             except:
                 pass  # 保持为字符串
 
-            OmegaConf.set(config, key, value)
+            OmegaConf.update(config, key, value)
             logger.info(f"  {key} = {value}")
 
         except Exception as e:
             logger.warning(f"Failed to apply override '{override}': {e}")
 
     return config
+
+
+def create_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
+        formatter_class=argparse.RawDescriptionHelpFormatter,  # 写的格式是什么样就按什么样显示。
+        epilog="""
+            Examples:
+            # 训练模型
+            python main.py train lightning_landslide/configs/experiment/optical_baseline.yaml
+            
+            # 运行推理
+            python main.py predict lightning_landslide/configs/experiment/optical_baseline.yaml
+            
+            # 验证模型
+            python main.py validate lightning_landslide/configs/experiment/optical_baseline.yaml
+
+            """,
+    )
+
+    # 主要参数
+    parser.add_argument(
+        "task",
+        choices=["train", "predict", "validate"],
+        help="Task to execute",
+    )
+
+    parser.add_argument(
+        "config",
+        type=str,
+        help="Path to configuration file",
+    )
+
+    return parser
 
 
 def main():
@@ -708,44 +716,20 @@ def main():
 
     所有的复杂性都被配置文件和实例化工具吸收了。
     """
-    parser = create_parser()
-    args = parser.parse_args()
+    parser = create_parser()  # 创建命令行参数解析器
+    args = parser.parse_args()  # 解析命令行参数
 
-    try:
-        # 创建实验运行器
-        runner = ExperimentRunner(args.config, args.task)
+    # 创建实验运行器
+    runner = ExperimentRunner(args.config, args.task)
 
-        # 应用命令行覆盖（如果有的话）
-        if args.override:
-            runner.config = apply_overrides(runner.config, args.override)
+    # 运行实验
+    results = runner.run()
 
-        # 覆盖checkpoint路径（如果在命令行中指定）
-        if args.checkpoint:
-            runner.config.checkpoint_path = args.checkpoint
-            logger.info(f"Using checkpoint: {args.checkpoint}")
-
-        # 运行实验
-        results = runner.run()
-
-        # 报告结果
-        print(f"\n🎉 Task '{args.task}' completed successfully!")
-        if results.get("best_model_path"):
-            print(f"📁 Best model saved to: {results['best_model_path']}")
-
-        return 0
-
-    except KeyboardInterrupt:
-        logger.info("Experiment interrupted by user")
-        return 1
-
-    except Exception as e:
-        logger.error(f"Experiment failed: {e}")
-        if args.verbose:
-            import traceback
-
-            traceback.print_exc()
-        return 1
+    # 报告结果
+    print(f"\n🎉 Task '{args.task}' completed successfully!")
+    if results.get("best_model_path"):
+        print(f"📁 Best model saved to: {results['best_model_path']}")
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()
