@@ -142,57 +142,97 @@ class ExperimentRunner:
 
     def _run_training(self) -> Dict[str, Any]:
         """
-        执行训练任务
+        执行训练任务 - 参考latent-diffusion的优雅解决方案
 
-        这是整个重构的核心成果展示。看看这个方法有多么简洁：
-        - 从配置创建模型：一行代码
-        - 从配置创建数据：一行代码
-        - 从配置创建训练器：一行代码
-        - 开始训练：一行代码
-
-        这就是"配置驱动"设计的威力！
+        关键思路：
+        1. 不要修改trainer_config的params
+        2. 在instantiate_from_config(trainer_config)之后再设置callbacks和loggers
+        3. 这样避免了instantiate.py解析复杂对象的问题
         """
         logger.info("Initializing training components...")
 
-        # 🎯 核心改进：用配置创建所有组件
+        # 创建模型和数据模块
         model = instantiate_from_config(self.config.model)
         data_module = instantiate_from_config(self.config.data)
 
-        # 处理trainer配置（可能包含callbacks和loggers）
+        # 处理trainer配置 - 保持原始配置的纯净性
         trainer_config = self.config.trainer.copy()
 
-        # 创建callbacks（如果配置中有的话）
-        if "callbacks" in self.config:
-            callbacks = []
-            for callback_name, callback_config in self.config.callbacks.items():
-                callback = instantiate_from_config(callback_config)
-                callbacks.append(callback)
-                logger.info(f"Added callback: {callback_name}")
-            trainer_config.params.callbacks = callbacks
+        # 单独处理callbacks
+        callbacks = self._create_callbacks()
 
-        # 创建loggers（如果配置中有的话）
-        if "loggers" in self.config:
-            loggers = []
-            for logger_name, logger_config in self.config.loggers.items():
-                log_obj = instantiate_from_config(logger_config)
-                loggers.append(log_obj)
-                logger.info(f"Added logger: {logger_name}")
-            trainer_config.params.logger = loggers
+        # 单独处理loggers
+        loggers = self._create_loggers()
 
-        # 创建训练器
+        # 创建trainer（不包含callbacks和loggers，避免instantiate.py的解析问题）
         trainer = instantiate_from_config(trainer_config)
 
-        logger.info("🎓 Starting training...")
+        # 在trainer创建完成后，再设置callbacks和loggers
+        if callbacks:
+            trainer.callbacks = callbacks
 
-        # 开始训练 - 就是这么简单！
+        if loggers:
+            trainer.logger = loggers[0] if len(loggers) == 1 else loggers
+
+        # 开始训练
+        logger.info("🚀 Starting training...")
         trainer.fit(model, data_module)
 
-        # 返回训练结果
         return {
             "status": "completed",
-            "best_model_path": trainer.checkpoint_callback.best_model_path if trainer.checkpoint_callback else None,
             "trainer": trainer,
+            "model": model,
+            "best_checkpoint": self._get_best_checkpoint_path(trainer),
         }
+
+    def _create_callbacks(self) -> List:
+        """
+        创建callbacks - 独立的方法，更清晰的职责分离
+        """
+        callbacks = []
+
+        if "callbacks" not in self.config:
+            return callbacks
+
+        for callback_name, callback_config in self.config.callbacks.items():
+            try:
+                callback = instantiate_from_config(callback_config)
+                callbacks.append(callback)
+                logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
+            except Exception as e:
+                logger.error(f"✗ Failed to create callback {callback_name}: {e}")
+                raise
+
+        return callbacks
+
+    def _create_loggers(self) -> List:
+        """
+        创建loggers - 独立的方法，更清晰的职责分离
+        """
+        loggers = []
+
+        if "loggers" not in self.config:
+            return loggers
+
+        for logger_name, logger_config in self.config.loggers.items():
+            try:
+                lightning_logger = instantiate_from_config(logger_config)
+                loggers.append(lightning_logger)
+                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
+            except Exception as e:
+                logger.error(f"✗ Failed to create logger {logger_name}: {e}")
+                raise
+
+        return loggers
+
+    def _get_best_checkpoint_path(self, trainer) -> Optional[str]:
+        """
+        获取最佳检查点路径 - 工具方法
+        """
+        for callback in trainer.callbacks:
+            if isinstance(callback, pl.callbacks.ModelCheckpoint):
+                return getattr(callback, "best_model_path", None)
+        return None
 
     def _run_testing(self) -> Dict[str, Any]:
         """
