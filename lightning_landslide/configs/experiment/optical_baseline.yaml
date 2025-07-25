@@ -191,7 +191,6 @@ callbacks:
   model_checkpoint:
     target: pytorch_lightning.callbacks.ModelCheckpoint
     params:
-      dirpath: "lightning_landslide/outputs/checkpoints/optical_swin_tiny_baseline"
       filename: "best-{epoch:02d}-{val_f1:.4f}"
       monitor: "val_f1"         # 监控指标
       mode: "max"               # 最大值

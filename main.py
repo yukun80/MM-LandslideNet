@@ -223,14 +223,26 @@ class ExperimentRunner:
         if "callbacks" not in self.config:
             return callbacks
 
+        # 获取动态生成的路径
+        dynamic_checkpoint_dir = self.config.outputs.get("checkpoint_dir")
+        dynamic_log_dir = self.config.outputs.get("log_dir")
+
         for callback_name, callback_config in self.config.callbacks.items():
-            try:
-                callback = instantiate_from_config(callback_config)
-                callbacks.append(callback)
-                logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
-            except Exception as e:
-                logger.error(f"✗ Failed to create callback {callback_name}: {e}")
-                raise
+            # 深拷贝配置，避免修改原始配置
+            effective_config = callback_config.copy()
+
+            # 如果是 ModelCheckpoint 且没有 dirpath，使用动态路径
+            if callback_config.target == "pytorch_lightning.callbacks.ModelCheckpoint" and dynamic_checkpoint_dir:
+                # 直接设置动态路径，覆盖配置文件中的静态路径
+                OmegaConf.update(effective_config, "params.dirpath", dynamic_checkpoint_dir)
+
+            if callback_config.target == "lightning_landslide.src.utils.metrics.MetricsLogger" and dynamic_log_dir:
+                OmegaConf.update(effective_config, "params.log_dir", dynamic_log_dir)
+
+            # 创建callback
+            callback = instantiate_from_config(effective_config)
+            callbacks.append(callback)
+            logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
 
         return callbacks
 

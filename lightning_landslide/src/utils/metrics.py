@@ -32,8 +32,15 @@ class MetricsLogger(Callback):
     4. 训练过程的统计信息
     """
 
-    def __init__(self):
+    def __init__(self, log_dir: Optional[str] = None):
+        """
+        初始化MetricsLogger
+
+        Args:
+            log_dir: 自定义日志保存目录。如果为None，会尝试使用trainer.log_dir
+        """
         super().__init__()
+        self.custom_log_dir = Path(log_dir) if log_dir else None
         self.metrics_history = []
         self.epoch_times = []
         self.best_metrics = {}
@@ -100,11 +107,25 @@ class MetricsLogger(Callback):
         if trainer.current_epoch % 10 == 0:
             self._log_detailed_metrics(trainer, current_metrics)
 
+    def _get_save_directory(self) -> Path:
+        """
+        获取保存目录 - 自定义路径选择
+
+        Returns:
+            确定的保存目录路径
+        """
+        target_dir = self.custom_log_dir
+        logger.debug(f"Using custom log directory: {target_dir}")
+
+        # 确保目录存在
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+
     def _log_detailed_metrics(self, trainer, current_metrics):
         """记录详细的指标信息"""
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'='*100}")
         logger.info(f"Epoch {trainer.current_epoch} Summary:")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'='*100}\n")
         logger.info(f"Train Loss: {current_metrics['train_loss']:.4f}")
         logger.info(f"Val Loss:   {current_metrics['val_loss']:.4f}")
         logger.info(f"Val F1:     {current_metrics['val_f1']:.4f}")
@@ -122,35 +143,36 @@ class MetricsLogger(Callback):
             avg_time = np.mean(self.epoch_times[-10:])  # 最近10个epoch的平均时间
             logger.info(f"Avg Epoch Time: {avg_time:.2f}s")
 
-        logger.info(f"{'='*60}\n")
+        logger.info(f"{'='*100}\n")
 
     def on_train_end(self, trainer, pl_module):
-        """训练结束时保存完整的指标历史"""
-        if hasattr(trainer, "log_dir") and trainer.log_dir:
-            metrics_file = Path(trainer.log_dir) / "metrics_history.json"
+        """训练结束时保存完整的指标历史 - 使用智能路径选择"""
+        target_dir = self._get_save_directory()
+        metrics_file = target_dir / "metrics_history.json"
 
-            # 转换tensor为float
-            history_serializable = []
-            for epoch_metrics in self.metrics_history:
-                epoch_data = {}
-                for key, value in epoch_metrics.items():
-                    if isinstance(value, torch.Tensor):
-                        epoch_data[key] = value.item()
-                    else:
-                        epoch_data[key] = value
-                history_serializable.append(epoch_data)
+        # 转换tensor为float
+        history_serializable = []
+        for epoch_metrics in self.metrics_history:
+            epoch_data = {}
+            for key, value in epoch_metrics.items():
+                if isinstance(value, torch.Tensor):
+                    epoch_data[key] = value.item()
+                else:
+                    epoch_data[key] = value
+            history_serializable.append(epoch_data)
 
-            # 保存到文件
-            with open(metrics_file, "w") as f:
-                json.dump(
-                    {
-                        "metrics_history": history_serializable,
-                        "best_metrics": self.best_metrics,
-                        "total_epochs": trainer.current_epoch + 1,
-                        "avg_epoch_time": np.mean(self.epoch_times) if self.epoch_times else 0,
-                    },
-                    f,
-                    indent=2,
-                )
+        # 保存到文件
+        with open(metrics_file, "w") as f:
+            json.dump(
+                {
+                    "metrics_history": history_serializable,
+                    "best_metrics": self.best_metrics,
+                    "total_epochs": trainer.current_epoch + 1,
+                    "avg_epoch_time": np.mean(self.epoch_times) if self.epoch_times else 0,
+                    "save_directory": str(target_dir),  # 记录实际保存路径
+                },
+                f,
+                indent=2,
+            )
 
-            logger.info(f"Metrics history saved to {metrics_file}")
+        logger.info(f"📁 Metrics saved in directory: {target_dir}")
