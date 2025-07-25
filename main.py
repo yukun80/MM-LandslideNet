@@ -199,6 +199,37 @@ class ExperimentRunner:
         # 开始训练
         logger.info("🚀 Starting training...")
         trainer.fit(model, data_module)
+        """
+            fit 是 pytorch_lightning.Trainer 类的核心方法，这个方法会自动执行整个训练流程：
+
+            数据准备：调用 data_module.prepare_data() 和 data_module.setup()
+            创建数据加载器：获取 train/val dataloaders
+            训练循环：
+
+            调用 model.training_step() 处理每个batch
+            计算loss和梯度
+            执行优化器更新
+
+            验证循环：
+
+            调用 model.validation_step()
+            计算验证指标
+
+            回调执行：运行checkpointing、early stopping等
+            日志记录：自动记录所有指标
+            # Lightning内部会调用
+            ├── data_module.prepare_data()           # 数据准备
+            ├── data_module.setup('fit')             # 数据集设置  
+            ├── data_module.train_dataloader()       # 获取训练数据加载器
+            ├── data_module.val_dataloader()         # 获取验证数据加载器
+            ├── model.configure_optimizers()         # 配置优化器
+            └── 训练循环:
+                ├── model.training_step(batch, idx)  # 每个训练batch
+                ├── optimizer.step()                 # 参数更新
+                ├── model.validation_step(batch, idx) # 每个验证batch
+                ├── callbacks.on_epoch_end()         # 回调函数
+                └── logger.log_metrics()             # 记录指标
+        """
 
         return {
             "status": "completed",
@@ -227,6 +258,8 @@ class ExperimentRunner:
         dynamic_checkpoint_dir = self.config.outputs.get("checkpoint_dir")
         dynamic_log_dir = self.config.outputs.get("log_dir")
 
+        logger.info("-" * 100)
+
         for callback_name, callback_config in self.config.callbacks.items():
             # 深拷贝配置，避免修改原始配置
             effective_config = callback_config.copy()
@@ -244,6 +277,7 @@ class ExperimentRunner:
             callbacks.append(callback)
             logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
 
+        logger.info("-" * 100)
         return callbacks
 
     def _create_loggers(self) -> List:
@@ -258,16 +292,22 @@ class ExperimentRunner:
         # 获取我们动态创建的日志目录
         dynamic_log_dir = self.config.outputs.get("log_dir")
 
+        logger.info("-" * 100)
+
         for logger_name, logger_config in self.config.loggers.items():
-            effective_config = logger_config.copy()
-            OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
-            logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
+            if logger_name == "tensorboard":
+                effective_config = logger_config.copy()
+                OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
+                logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
 
-            # 使用更新后的配置来实例化
-            lightning_logger = instantiate_from_config(effective_config)
-            loggers.append(lightning_logger)
-            logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
+                # 使用更新后的配置来实例化
+                lightning_logger = instantiate_from_config(effective_config)
+                loggers.append(lightning_logger)
+                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
 
+            elif logger_name == "wandb":
+                pass
+        logger.info("-" * 100)
         return loggers
 
     def _get_best_checkpoint_path(self, trainer) -> Optional[str]:

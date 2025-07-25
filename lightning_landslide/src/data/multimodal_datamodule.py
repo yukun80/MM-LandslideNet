@@ -180,7 +180,7 @@ class MultiModalDataModule(pl.LightningDataModule):
 
     def prepare_data(self) -> None:
         """
-        数据准备阶段（全局执行一次）
+        数据准备阶段（全局执行一次），检查数据是否都存在
 
         这个方法遵循Lightning的设计模式，只在主进程中执行一次。
         主要用于：
@@ -188,7 +188,7 @@ class MultiModalDataModule(pl.LightningDataModule):
         2. 执行一次性的数据预处理
         3. 创建必要的目录结构
         """
-        logger.info("Preparing data...")
+        logger.info("🔍 Preparing data...")
 
         # 验证数据目录存在
         if not self.train_data_dir.exists():

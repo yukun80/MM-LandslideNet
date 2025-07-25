@@ -92,7 +92,7 @@ def instantiate_from_config(config: Union[Dict, DictConfig], **kwargs) -> Any:
     final_params = {**params, **kwargs}
 
     # 准备进入模型创建
-    logger.info(f"🗂️Instantiating {config['target']} with params: {list(final_params.keys())}")
+    logger.info(f"🗂️ Instantiating {config['target']} with params: {list(final_params.keys())}")
 
     try:
         # 创建对象实例
