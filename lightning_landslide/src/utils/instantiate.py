@@ -91,7 +91,8 @@ def instantiate_from_config(config: Union[Dict, DictConfig], **kwargs) -> Any:
     # kwargs的优先级更高，会覆盖config中的同名参数
     final_params = {**params, **kwargs}
 
-    logger.info(f"Instantiating {config['target']} with params: {list(final_params.keys())}")
+    # 准备进入模型创建
+    logger.info(f"🗂️Instantiating {config['target']} with params: {list(final_params.keys())}")
 
     try:
         # 创建对象实例

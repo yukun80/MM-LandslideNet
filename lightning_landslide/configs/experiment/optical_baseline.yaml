@@ -33,11 +33,11 @@ model:
     base_model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
-        model_name: "swinv2_small_patch4_window16_256"
+        model_name: "swinv2_small_window16_256"
         input_channels: 5
         pretrained: true
         dropout_rate: 0.2
-        pretrained_path: "pretrained/swinv2_small_patch4_window16_256.pth"
+        pretrained_path: null
         img_size: 256
         # num_classes: 1
         # freeze_backbone: false
@@ -53,7 +53,7 @@ model:
     # 损失函数：使用Focal Loss处理类别不平衡
     loss_config:
       type: "focal"
-      focal_params: {alpha: 1.0, gamma: 2.0}
+      focal_params: {alpha: 0.25, gamma: 2.0} # 或者0.25，需要实验？
     
     # 优化器：AdamW with differential learning rates
     optimizer_config:

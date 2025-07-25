@@ -29,7 +29,7 @@ class OpticalSwinModel(BaseModel):
 
     def __init__(
         self,
-        model_name: str = "swinv2_small_patch4_window12_256",
+        model_name: str = "swinv2_small_window16_256",
         input_channels: int = 5,
         pretrained: bool = True,
         dropout_rate: float = 0.2,
@@ -79,7 +79,7 @@ class OpticalSwinModel(BaseModel):
             }
         )
 
-        logger.info("OpticalSwinModel initialization completed successfully")
+        logger.info("🙏OpticalSwinModel initialization completed successfully")
 
     def _load_local_weights(self, pretrained_path: str):
         """从本地文件加载预训练权重"""
@@ -128,7 +128,7 @@ class OpticalSwinModel(BaseModel):
         这种初始化策略让模型在训练开始时就具有良好的特征提取能力，
         而不是从随机权重开始。这对于遥感数据特别有效。
         """
-        logger.info("Modifying input layer for 5-channel input...")
+        logger.info(f"Modifying input layer for {self.input_channels}-channel input...")
 
         # 步骤1：找到第一个卷积层
         first_conv = None
@@ -171,7 +171,7 @@ class OpticalSwinModel(BaseModel):
                 # 这基于假设：NIR与可见光有相似但不同的特征模式
                 nir_init = old_weight.mean(dim=1, keepdim=True)  # 对RGB通道求平均
                 new_conv.weight[:, 3:4, :, :] = nir_init
-                logger.info("✓ Initialized NIR channel with RGB average")
+                # logger.info("✓ Initialized NIR channel with RGB average")
 
                 # 第5通道(NDVI)：使用Red+NIR的组合进行初始化
                 # 这基于NDVI计算公式：(NIR-Red)/(NIR+Red)的特征模式
@@ -179,7 +179,7 @@ class OpticalSwinModel(BaseModel):
                     red_weight = old_weight[:, 0:1, :, :]  # Red通道权重
                     ndvi_init = (nir_init + red_weight) / 2  # Red和NIR的平均
                     new_conv.weight[:, 4:5, :, :] = ndvi_init
-                    logger.info("✓ Initialized NDVI channel with Red+NIR combination")
+                    # logger.info("✓ Initialized NDVI channel with Red+NIR combination")
 
                 # 如果有更多通道，使用相同策略
                 for i in range(5, self.input_channels):
@@ -222,7 +222,7 @@ class OpticalSwinModel(BaseModel):
         final_name = names[-1]
         setattr(current_module, final_name, new_layer)
 
-        logger.info(f"Replaced layer: {layer_name}")
+        # logger.info(f"Replaced layer: {layer_name}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

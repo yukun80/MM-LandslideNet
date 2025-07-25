@@ -122,6 +122,7 @@ class BaseModel(ABC, nn.Module):
         # 估算模型大小（假设float32，每个参数4字节）
         model_size_mb = total_params * 4 / (1024 * 1024)
 
+        # 打印模型信息
         base_info = {
             "model_name": self.__class__.__name__,
             "total_parameters": total_params,

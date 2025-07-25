@@ -114,10 +114,11 @@ class LandslideClassificationModule(pl.LightningModule):
         self.validation_step_outputs = []
         self.test_step_outputs = []
 
-        logger.info("LandslideClassificationModule initialized")
+        logger.info("🚀LandslideClassificationModule initialized" + "-" * 100)
         logger.info(f"Model: {self.model.__class__.__name__}")
         logger.info(f"Feature dim: {self.model.get_feature_dim()}")
         logger.info(f"Loss function: {self.criterion.__class__.__name__}")
+        logger.info("-" * 100)
 
     def _build_model(self) -> BaseModel:
         """
@@ -132,17 +133,18 @@ class LandslideClassificationModule(pl.LightningModule):
         from ..utils.instantiate import instantiate_from_config
 
         logger.info("Building backbone model...")
+        # 创建pytorch模型
         model = instantiate_from_config(self.base_model_config)
 
         if not isinstance(model, BaseModel):
             raise TypeError(f"Model must inherit from BaseModel, got {type(model)}")
 
-        logger.info(f"Built model: {model.__class__.__name__}")
-
         # 打印模型信息
+        logger.info("📦model info:" + "-" * 100)
         model_info = model.get_model_info()
         for key, value in model_info.items():
             logger.info(f"  {key}: {value}")
+        logger.info("-" * 100)
 
         return model
 

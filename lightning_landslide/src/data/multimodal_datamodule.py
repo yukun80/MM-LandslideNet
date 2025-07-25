@@ -70,7 +70,7 @@ class MultiModalDataModule(pl.LightningDataModule):
         preprocessing: Optional[Dict] = None,
         augmentation: Optional[Dict] = None,
         # 其他配置
-        seed: int = 42,
+        seed: int = 3407,
         **kwargs,
     ):
         """
@@ -108,7 +108,7 @@ class MultiModalDataModule(pl.LightningDataModule):
         self.exclude_ids_file = exclude_ids_file
 
         # 通道配置
-        self.channel_config = channel_config or self._get_default_channel_config()
+        self.channel_config = channel_config
         self.active_mode = active_mode
 
         # 数据加载配置
@@ -137,30 +137,11 @@ class MultiModalDataModule(pl.LightningDataModule):
         # 数据统计信息
         self._data_stats = {}
 
-        logger.info(f"MultiModalDataModule initialized")
+        logger.info(f"🔢MultiModalDataModule initialized" + "-" * 100)
         logger.info(f"Active mode: {self.active_mode}")
         logger.info(f"Batch size: {self.batch_size}, Workers: {self.num_workers}")
         logger.info(f"Validation split: {self.val_split}")
-
-    def _get_default_channel_config(self) -> Dict[str, Any]:
-        """获取默认的通道配置"""
-        return {
-            "total_channels": 13,
-            "channel_groups": {
-                "optical": [0, 1, 2, 3],  # R, G, B, NIR
-                "sar_amplitude": [4, 5, 8, 9],  # SAR幅度图
-                "sar_difference": [6, 7, 10, 11],  # SAR差值图
-                "derived": ["ndvi"],  # 派生指标
-            },
-            "usage_modes": {
-                "optical_only": {"groups": ["optical", "derived"], "description": "仅使用光学数据"},
-                "full_multimodal": {
-                    "groups": ["optical", "derived", "sar_amplitude", "sar_difference"],
-                    "description": "使用全部模态",
-                },
-                "sar_focused": {"groups": ["sar_amplitude", "sar_difference"], "description": "专注SAR数据"},
-            },
-        }
+        logger.info("-" * 100)
 
     def _create_transforms(self, stage: str) -> Optional[Callable]:
         """

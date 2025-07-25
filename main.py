@@ -172,8 +172,9 @@ class ExperimentRunner:
         """
         logger.info("Initializing training components...")
 
-        # 创建模型和数据模块
+        # 创建模型
         model = instantiate_from_config(self.config.model)
+        # 创建数据模块
         data_module = instantiate_from_config(self.config.data)
 
         # 处理trainer配置 - 保持原始配置的纯净性
@@ -209,6 +210,13 @@ class ExperimentRunner:
     def _create_callbacks(self) -> List:
         """
         创建callbacks - 独立的方法，更清晰的职责分离
+        callbacks的作用：
+        1. 在训练过程中，记录训练日志
+        2. 在训练过程中，保存模型
+        3. 在训练过程中，保存最佳模型
+        4. 在训练过程中，保存验证集上的最佳模型
+        5. 在训练过程中，保存测试集上的最佳模型
+        6. 在训练过程中，保存训练集上的最佳模型
         """
         callbacks = []
 
