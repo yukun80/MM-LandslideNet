@@ -307,6 +307,8 @@ class ExperimentRunner:
             if logger_name == "tensorboard":
                 effective_config = logger_config.copy()
                 OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
+                OmegaConf.update(effective_config, "params.name", "")
+                OmegaConf.update(effective_config, "params.version", "")
                 logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
 
                 # 使用更新后的配置来实例化
@@ -315,7 +317,10 @@ class ExperimentRunner:
                 logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
 
             elif logger_name == "wandb":
-                pass
+                # WandB配置保持不变
+                lightning_logger = instantiate_from_config(logger_config)
+                loggers.append(lightning_logger)
+                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
         logger.info("-" * 100)
         return loggers
 

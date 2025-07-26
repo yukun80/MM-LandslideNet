@@ -301,9 +301,7 @@ class LandslideClassificationModule(pl.LightningModule):
             损失值
         """
         x, y = batch
-
-        # 前向传播
-        logits = self(x)
+        logits = self(x)  # 前向传播
 
         # 确保标签维度正确
         if logits.dim() == 2 and logits.size(1) == 1:
@@ -322,6 +320,7 @@ class LandslideClassificationModule(pl.LightningModule):
 
         # 记录指标
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss_epoch", loss, on_step=False, on_epoch=True)  # 备用键名
         self.log("train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train_f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
 

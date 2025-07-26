@@ -213,13 +213,15 @@ callbacks:
   lr_monitor:
     target: pytorch_lightning.callbacks.LearningRateMonitor
     params:
-      logging_interval: "step"  # 记录学习率变化
+      logging_interval: "epoch"  # 记录学习率变化
       log_momentum: false        # 不记录动量
   
   # 自定义回调：模型统计和可视化
   metrics_logger:
     target: lightning_landslide.src.utils.metrics.MetricsLogger
-    params: {}
+    params:
+      summary_interval: 5  # 每5个epoch打印详细总结
+      save_history: true   # 保存完整历史
 
 # === 日志记录器配置 ===
 # 定义实验追踪和可视化方式
@@ -230,6 +232,8 @@ loggers:
     params:
       log_graph: false           # 记录计算图
       default_hp_metric: true   # 记录默认超参数指标
+      name: ""                  # 🔧 关键修复：设置为空字符串，避免创建lightning_logs目录
+      version: ""               # 🔧 关键修复：设置为空字符串，避免创建version_X目录
   
   # 可选：添加W&B日志记录器（如果需要在线追踪）
   # wandb:
