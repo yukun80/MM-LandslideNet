@@ -74,17 +74,26 @@ class ExperimentRunner:
 
         包括日志、随机种子、输出目录等基础设施。
         """
+        # 创建输出目录
+        self._create_output_dirs()
         # 设置日志，getattr的作用是获取config中的log_level，如果没有则使用INFO
         log_level = getattr(logging, self.config.get("log_level", "INFO").upper())
-        setup_logging(level=log_level)
+
+        log_file = None
+
+        if "outputs" in self.config and "log_dir" in self.config.outputs:
+            log_file = Path(self.config.outputs.log_dir) / f"{self.config.experiment_name}.log"
+
+        setup_logging(
+            level=log_level,
+            log_file=str(log_file) if log_file else None,
+            use_colors=True,
+        )
 
         # 设置随机种子，seed_everything的作用是设置随机种子，并设置torch.manual_seed和torch.cuda.manual_seed，
         # workers为True时，会设置torch.utils.data.DataLoader的num_workers为1
         if "seed" in self.config:
             pl.seed_everything(self.config.seed, workers=True)
-
-        # 创建输出目录
-        self._create_output_dirs()
 
         # 保存配置文件到实验目录
         self._save_config()
@@ -319,60 +328,6 @@ class ExperimentRunner:
                 return getattr(callback, "best_model_path", None)
         return None
 
-    def _run_testing(self) -> Dict[str, Any]:
-        """
-        执行测试任务
-
-        测试任务的核心目标是评估已训练模型的性能。它加载保存的
-        检查点，在测试集上运行模型，并生成详细的性能报告。
-
-        Returns:
-            包含测试结果和相关文件路径的字典
-        """
-        logger.info("🧪 Initializing testing task...")
-
-        # 验证必需的配置
-        if "checkpoint_path" not in self.config:
-            raise ValueError("Testing requires 'checkpoint_path' in config")
-
-        checkpoint_path = self.config.checkpoint_path
-        if not Path(checkpoint_path).exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        logger.info(f"Loading checkpoint: {checkpoint_path}")
-
-        # 创建组件
-        logger.info("Creating model and data module...")
-        model = instantiate_from_config(self.config.model)
-        data_module = instantiate_from_config(self.config.data)
-
-        # 为测试任务调整trainer配置
-        trainer_config = self.config.trainer.copy()
-        trainer_config.params.update(
-            {
-                "logger": False,  # 测试时不需要日志记录
-                "enable_checkpointing": False,  # 测试时不保存检查点
-                "enable_progress_bar": True,  # 显示测试进度
-            }
-        )
-
-        trainer = instantiate_from_config(trainer_config)
-
-        # 运行测试
-        logger.info("🎯 Running model testing...")
-        test_results = trainer.test(model, data_module, ckpt_path=checkpoint_path)
-
-        # 保存测试结果
-        results_file = self._save_test_results(test_results)
-
-        logger.info("✅ Testing completed successfully!")
-        return {
-            "status": "completed",
-            "test_results": test_results,
-            "results_file": results_file,
-            "checkpoint_used": checkpoint_path,
-        }
-
     def _run_prediction(self) -> Dict[str, Any]:
         """
         执行推理任务
@@ -428,99 +383,6 @@ class ExperimentRunner:
             "checkpoint_used": checkpoint_path,
             "num_samples": len(processed_predictions) if processed_predictions else 0,
         }
-
-    def _run_validation(self) -> Dict[str, Any]:
-        """
-        执行验证任务
-
-        验证任务用于在验证集上评估模型性能，通常用于：
-        1. 模型开发过程中的快速性能检查
-        2. 超参数调优
-        3. 模型选择和比较
-
-        Returns:
-            包含验证结果的字典
-        """
-        logger.info("🔍 Initializing validation task...")
-
-        # 创建组件
-        model = instantiate_from_config(self.config.model)
-        data_module = instantiate_from_config(self.config.data)
-
-        # 配置trainer（验证任务通常比较轻量）
-        trainer_config = self.config.trainer.copy()
-        trainer_config.params.update(
-            {
-                "logger": False,
-                "enable_checkpointing": False,
-                "enable_progress_bar": True,
-            }
-        )
-        trainer = instantiate_from_config(trainer_config)
-
-        # 检查是否指定了检查点
-        checkpoint_path = self.config.get("checkpoint_path")
-        if checkpoint_path:
-            logger.info(f"Using checkpoint: {checkpoint_path}")
-            if not Path(checkpoint_path).exists():
-                raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        # 运行验证
-        logger.info("🎯 Running validation...")
-        val_results = trainer.validate(model, data_module, ckpt_path=checkpoint_path)
-
-        # 保存验证结果
-        results_file = self._save_validation_results(val_results)
-
-        logger.info("✅ Validation completed successfully!")
-        return {
-            "status": "completed",
-            "validation_results": val_results,
-            "results_file": results_file,
-            "checkpoint_used": checkpoint_path,
-        }
-
-    def _save_test_results(self, test_results: List[Dict]) -> Path:
-        """
-        保存测试结果到文件
-
-        Args:
-            test_results: Lightning trainer.test()的返回结果
-
-        Returns:
-            保存的结果文件路径
-        """
-        import json
-        from datetime import datetime
-
-        # 创建输出目录
-        output_dir = Path(self.config.outputs.get("predictions_dir", "outputs/test_results"))
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 生成文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"test_results_{self.config.experiment_name}_{timestamp}.json"
-        results_file = output_dir / filename
-
-        # 保存结果
-        with open(results_file, "w") as f:
-            json.dump(
-                {
-                    "experiment_name": self.config.experiment_name,
-                    "timestamp": timestamp,
-                    "checkpoint_path": self.config.get("checkpoint_path"),
-                    "test_results": test_results,
-                    "config_summary": {
-                        "model_type": self.config.model.target.split(".")[-1],
-                        "data_config": self.config.data.target.split(".")[-1],
-                    },
-                },
-                f,
-                indent=2,
-            )
-
-        logger.info(f"Test results saved to: {results_file}")
-        return results_file
 
     def _save_validation_results(self, val_results: List[Dict]) -> Path:
         """
@@ -679,54 +541,6 @@ class ExperimentRunner:
             print(f"📊 Data: {self.config.data.get('params', {}).get('train_data_dir', 'N/A')}")
 
         print("=" * 80 + "\n")
-
-
-def apply_overrides(config: DictConfig, overrides: list) -> DictConfig:
-    """
-    应用命令行覆盖
-
-    允许用户在命令行中覆盖配置文件中的特定值。
-    这在调试和快速实验时非常有用。
-
-    Args:
-        config: 原始配置
-        overrides: 覆盖列表，格式为 ["key=value", "another.key=value"]
-
-    Returns:
-        修改后的配置
-    """
-    if not overrides:
-        return config
-
-    logger.info(f"Applying {len(overrides)} config overrides...")
-
-    for override in overrides:
-        try:
-            key, value = override.split("=", 1)
-
-            # 尝试自动类型转换
-            try:
-                # 处理数字
-                if value.isdigit():
-                    value = int(value)
-                elif value.replace(".", "").isdigit() and value.count(".") == 1:
-                    value = float(value)
-                # 处理布尔值
-                elif value.lower() in ["true", "false"]:
-                    value = value.lower() == "true"
-                # 处理列表（简单情况）
-                elif value.startswith("[") and value.endswith("]"):
-                    value = eval(value)  # 注意：生产环境中应该用更安全的解析方法
-            except:
-                pass  # 保持为字符串
-
-            OmegaConf.update(config, key, value)
-            logger.info(f"  {key} = {value}")
-
-        except Exception as e:
-            logger.warning(f"Failed to apply override '{override}': {e}")
-
-    return config
 
 
 def create_parser() -> argparse.ArgumentParser:

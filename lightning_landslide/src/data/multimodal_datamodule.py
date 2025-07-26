@@ -257,8 +257,7 @@ class MultiModalDataModule(pl.LightningDataModule):
             )
             logger.info(f"Test dataset: {len(self.test_dataset)} samples")
 
-        # 计算数据统计信息
-        self._compute_data_statistics()
+        logger.info("-" * 100)
 
     def train_dataloader(self) -> DataLoader:
         """创建训练数据加载器"""
@@ -308,26 +307,6 @@ class MultiModalDataModule(pl.LightningDataModule):
     def predict_dataloader(self) -> Optional[DataLoader]:
         """创建预测数据加载器"""
         return self.test_dataloader()
-
-    def _compute_data_statistics(self) -> None:
-        """计算数据集统计信息"""
-        stats = {}
-
-        if self.train_dataset is not None:
-            stats["train_size"] = len(self.train_dataset)
-
-        if self.val_dataset is not None:
-            stats["val_size"] = len(self.val_dataset)
-
-        if self.test_dataset is not None:
-            stats["test_size"] = len(self.test_dataset)
-
-        stats["active_mode"] = self.active_mode
-        stats["batch_size"] = self.batch_size
-        stats["val_split"] = self.val_split
-
-        self._data_stats = stats
-        logger.info(f"Data statistics: {stats}")
 
     def get_data_info(self) -> Dict[str, Any]:
         """获取数据模块信息"""

@@ -82,7 +82,6 @@ class MultiModalDataset(Dataset):
 
         logger.info(f"🔢 Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
         logger.info(f"🔢 Final channel count: {self.num_channels}")
-        logger.info("-" * 100)
 
     def _parse_active_channels(self) -> Dict[str, List[int]]:
         """解析当前使用模式下的活跃通道"""

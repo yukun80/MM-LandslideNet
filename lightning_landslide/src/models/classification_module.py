@@ -321,7 +321,7 @@ class LandslideClassificationModule(pl.LightningModule):
         self.train_f1(preds, y)
 
         # 记录指标
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train_f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
 

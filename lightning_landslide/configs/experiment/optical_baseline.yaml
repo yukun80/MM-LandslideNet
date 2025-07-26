@@ -114,7 +114,7 @@ data:
     active_mode: "optical_only"
     
     # 数据加载配置
-    batch_size: 64
+    batch_size: 16
     num_workers: 8
     pin_memory: true
     
@@ -228,7 +228,7 @@ loggers:
   tensorboard:
     target: pytorch_lightning.loggers.TensorBoardLogger
     params:
-      log_graph: true           # 记录计算图
+      log_graph: false           # 记录计算图
       default_hp_metric: true   # 记录默认超参数指标
   
   # 可选：添加W&B日志记录器（如果需要在线追踪）
