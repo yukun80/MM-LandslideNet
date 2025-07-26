@@ -30,10 +30,8 @@ class MultiModalDataset(Dataset):
         csv_file: Union[str, Path],
         exclude_ids_file: Optional[Union[str, Path]] = None,
         transform: Optional[Callable] = None,
-        target_transform: Optional[Callable] = None,
         compute_ndvi: bool = True,
         cache_data: bool = True,
-        validate_data: bool = True,
         channel_config: Optional[Dict] = None,
         usage_mode: str = "optical_only",
     ):
@@ -48,35 +46,24 @@ class MultiModalDataset(Dataset):
             csv_file: 标签文件路径
             exclude_ids_file: 需要排除的样本ID文件（JSON格式）
             transform: 数据变换函数
-            target_transform: 标签变换函数
-            channels: 光学通道在原始数据中的索引位置
             compute_ndvi: 是否计算NDVI通道
             cache_data: 是否缓存数据到内存（小数据集时有用）
-            validate_data: 是否验证数据完整性
-            channel_config: ；输入数据通道配置
+            channel_config: 输入数据通道配置
+            usage_mode: 使用模式
         """
+        logger.info("MultiModalDataset_init" + "-" * 100)
         # 路径处理
         self.data_dir = Path(data_dir)
         self.csv_file = Path(csv_file)
 
-        # 验证路径存在性
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
-        if not self.csv_file.exists():
-            raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
-
         # 数据处理配置
         self.transform = transform
-        self.target_transform = target_transform
         self.compute_ndvi = compute_ndvi
         self.cache_data = cache_data
 
         self.channel_config = channel_config
         self.usage_mode = usage_mode
         self.active_channels = self._parse_active_channels()
-
-        # self.channel_groups = self.channel_config["channel_groups"]
-        # self.total_channels = self.channel_config["total_channels"]
 
         # 计算最终通道数
         self.num_channels = len(self.active_channels)
@@ -93,16 +80,22 @@ class MultiModalDataset(Dataset):
         # 过滤数据
         self._filter_data()
 
-        # 数据验证
-        if validate_data:
-            self._validate_data_samples()
+        logger.info(f"🔢 Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
+        logger.info(f"🔢 Final channel count: {self.num_channels}")
+        logger.info("-" * 100)
 
-        # 数据统计
-        self._compute_data_stats()
+    def _parse_active_channels(self) -> Dict[str, List[int]]:
+        """解析当前使用模式下的活跃通道"""
+        mode_config = self.channel_config["usage_modes"][self.usage_mode]
+        active_groups = mode_config["groups"]
 
-        logger.info(f"MultiModalDataset initialized with {len(self)} samples")
-        logger.info(f"Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
-        logger.info(f"Final channel count: {self.num_channels}")
+        active_channels = []
+
+        for group_name in active_groups:
+            group_channels = self.channel_config["channel_groups"][group_name]
+            active_channels.extend(group_channels)
+
+        return active_channels
 
     def _load_data_index(self) -> pd.DataFrame:
         """
@@ -114,34 +107,12 @@ class MultiModalDataset(Dataset):
         Returns:
             包含ID和标签的DataFrame
         """
-        logger.info(f"Loading data index from {self.csv_file}")
-
-        try:
-            df = pd.read_csv(self.csv_file)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load CSV file: {e}")
-
-        # 验证必需的列存在
-        required_columns = ["ID"]
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns in CSV: {missing_columns}")
+        df = pd.read_csv(self.csv_file)
 
         # 检查是否有标签列（训练集有，测试集可能没有）
         self.has_labels = "label" in df.columns
 
-        if self.has_labels:
-            # 验证标签值
-            unique_labels = df["label"].unique()
-            logger.info(f"Found labels: {sorted(unique_labels)}")
-
-            # 检查是否为二分类问题
-            if not set(unique_labels).issubset({0, 1}):
-                logger.warning(f"Unexpected label values: {unique_labels}")
-        else:
-            logger.info("No label column found - assuming test dataset")
-
-        logger.info(f"Loaded {len(df)} samples from CSV")
+        logger.info(f"🔢 Loaded {len(df)} samples from CSV")
         return df.reset_index(drop=True)
 
     def _load_exclude_ids(self, exclude_ids_file: Optional[Union[str, Path]]) -> set:
@@ -165,24 +136,13 @@ class MultiModalDataset(Dataset):
             logger.warning(f"Exclude IDs file not found: {exclude_path}")
             return set()
 
-        try:
-            with open(exclude_path, "r") as f:
-                exclude_ids = json.load(f)
+        with open(exclude_path, "r") as f:
+            exclude_ids = json.load(f)
 
-            if isinstance(exclude_ids, list):
-                exclude_set = set(exclude_ids)
-            elif isinstance(exclude_ids, dict):
-                # 支持更复杂的排除规则
-                exclude_set = set(exclude_ids.get("exclude", []))
-            else:
-                raise ValueError("Exclude IDs should be a list or dict")
+        exclude_set = set(exclude_ids.get("excluded_image_ids", []))
 
-            logger.info(f"Loaded {len(exclude_set)} samples to exclude")
-            return exclude_set
-
-        except Exception as e:
-            logger.error(f"Failed to load exclude IDs: {e}")
-            return set()
+        logger.info(f"😡🔢 Loaded {len(exclude_set)} samples to exclude")
+        return exclude_set
 
     def _filter_data(self) -> None:
         """
@@ -197,162 +157,11 @@ class MultiModalDataset(Dataset):
 
         # 过滤排除样本
         mask = ~self.data_index["ID"].isin(self.exclude_ids)
-        # .reset_index(drop=True)：重置行索引
         self.data_index = self.data_index[mask].reset_index(drop=True)
 
         filtered_count = initial_count - len(self.data_index)
-        logger.info(f"Filtered out {filtered_count} low-quality samples")
-        logger.info(f"Remaining samples: {len(self.data_index)}")
-
-    def _parse_active_channels(self) -> Dict[str, List[int]]:
-        """解析当前使用模式下的活跃通道"""
-        mode_config = self.channel_config["usage_modes"][self.usage_mode]
-        active_groups = mode_config["groups"]
-
-        channels_map = {}
-
-        for group_name in active_groups:
-            if group_name == "derived":
-                # 处理计算得出的通道（如NDVI）
-                channels_map[group_name] = ["ndvi"]  # 特殊标记
-            else:
-                group_channels = self.channel_config["channel_groups"][group_name]
-                channels_map[group_name] = group_channels
-
-        return channels_map
-
-    def _load_sample_data(self, sample_id: str) -> torch.Tensor:
-        """
-        加载并处理单个样本多模态的数据
-
-        这个方法实现了您原有数据加载逻辑的核心部分：
-        1. 加载多通道.npy文件
-        2. 提取指定的光学通道
-        3. 计算NDVI通道
-        4. 组合成最终的多通道数据
-
-        Args:
-            sample_id: 样本ID
-
-        Returns:
-            处理后的数据张量，形状为 (channels, height, width)
-        """
-
-        # 构造数据文件路径
-        data_path = self.data_dir / f"{sample_id}.npy"
-
-        if not data_path.exists():
-            raise FileNotFoundError(f"Data file not found: {data_path}")
-
-        # 加载原始数据
-        raw_data = np.load(data_path)  # 形状通常是 (12, 64, 64)
-
-        # 根据配置选择通道
-        selected_channels = []
-
-        for group_name, channels in self.active_channels.items():
-            if group_name == "derived" and "ndvi" in channels:
-                # 计算NDVI
-                optical_channels = self.channel_config["channel_groups"]["optical"]
-                red_idx, nir_idx = optical_channels[0], optical_channels[3]
-                ndvi = self._compute_ndvi(raw_data[red_idx], raw_data[nir_idx])
-                selected_channels.append(ndvi)
-            else:
-                # 选择原始通道
-                for ch_idx in channels:
-                    selected_channels.append(raw_data[ch_idx])
-
-        # 堆叠所有通道
-        final_data = np.stack(selected_channels, axis=0)  # (channels, height, width)
-
-        # 转换为PyTorch张量
-        data_tensor = torch.from_numpy(final_data).float()
-
-        return data_tensor
-
-    def _validate_data_samples(self, max_check: int = 100) -> None:
-        """
-        验证数据样本的完整性
-
-        这个方法随机检查一些数据文件，确保：
-        1. 文件存在且可读
-        2. 数据形状正确
-        3. 数据值在合理范围内
-
-        Args:
-            max_check: 最大检查样本数
-        """
-        logger.info("Validating data samples...")
-
-        # 随机选择一些样本进行检查
-        check_indices = np.random.choice(len(self.data_index), size=min(max_check, len(self.data_index)), replace=False)
-
-        missing_files = []
-        invalid_files = []
-
-        for idx in check_indices:
-            sample_id = self.data_index.iloc[idx]["ID"]
-            data_path = self.data_dir / f"{sample_id}.npy"
-
-            if not data_path.exists():
-                missing_files.append(sample_id)
-                continue
-
-            try:
-                data = np.load(data_path)
-
-                # 检查数据形状
-                if len(data.shape) != 3:
-                    invalid_files.append(f"{sample_id}: wrong shape {data.shape}")
-                    continue
-
-                # 检查通道数
-                if data.shape[0] < self.num_channels + 1:
-                    invalid_files.append(f"{sample_id}: insufficient channels {data.shape[0]}")
-                    continue
-
-                # 检查数据值范围（基本合理性检查）
-                if np.any(np.isnan(data)) or np.any(np.isinf(data)):
-                    invalid_files.append(f"{sample_id}: contains NaN or Inf values")
-                    continue
-
-            except Exception as e:
-                invalid_files.append(f"{sample_id}: load error - {str(e)}")
-
-        # 报告验证结果
-        if missing_files:
-            logger.error(f"Missing data files: {missing_files[:10]}...")  # 只显示前10个
-        if invalid_files:
-            logger.error(f"Invalid data files: {invalid_files[:10]}...")
-
-        if missing_files or invalid_files:
-            raise RuntimeError(f"Data validation failed: {len(missing_files)} missing, {len(invalid_files)} invalid")
-
-        logger.info(f"✓ Data validation passed ({len(check_indices)} samples checked)")
-
-    def _compute_data_stats(self) -> None:
-        """
-        计算数据统计信息
-
-        这些统计信息对于数据分析和模型调试很有用。
-        """
-        self.stats = {
-            "total_samples": len(self.data_index),
-            "num_channels": self.num_channels,
-            "active_channels": self.active_channels,
-            "compute_ndvi": self.compute_ndvi,
-        }
-
-        if self.has_labels:
-            label_counts = self.data_index["label"].value_counts().to_dict()
-            self.stats.update(
-                {
-                    "label_distribution": label_counts,
-                    "class_balance": min(label_counts.values()) / max(label_counts.values()) if label_counts else 0,
-                }
-            )
-
-        logger.info(f"Dataset statistics: {self.stats}")
+        logger.info(f"😡🔢 Filtered out {filtered_count} low-quality samples")
+        logger.info(f"😡🔢 Remaining samples: {len(self.data_index)}")
 
     def __len__(self) -> int:
         """返回数据集大小"""
@@ -408,17 +217,62 @@ class MultiModalDataset(Dataset):
             if self.transform is not None:
                 data = self.transform(data)
 
-            if self.target_transform is not None:
-                label = self.target_transform(label)
-
             return data, label
 
         except Exception as e:
             logger.error(f"Error loading sample {sample_id}: {e}")
-            # 返回一个全零张量作为fallback，避免训练中断
-            fallback_data = torch.zeros(self.num_channels, 64, 64)
-            fallback_label = torch.tensor(0, dtype=torch.long)
-            return fallback_data, fallback_label
+            raise e
+
+    def _load_sample_data(self, sample_id: str) -> torch.Tensor:
+        """
+        加载并处理单个样本多模态的数据
+
+        这个方法实现了您原有数据加载逻辑的核心部分：
+        1. 加载多通道.npy文件
+        2. 提取指定的光学通道
+        3. 计算NDVI通道
+        4. 组合成最终的多通道数据
+
+        Args:
+            sample_id: 样本ID
+
+        Returns:
+            处理后的数据张量，形状为 (channels, height, width)
+        """
+
+        # 构造数据文件路径
+        data_path = self.data_dir / f"{sample_id}.npy"
+
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+
+        # 加载原始数据
+        raw_data = np.load(data_path)  # 形状通常是 (12, 64, 64)
+
+        # 确保数据形状为 (channels, height, width)
+        if raw_data.shape[-1] == 12:  # (64, 64, 12) → (12, 64, 64)
+            raw_data = np.transpose(raw_data, (2, 0, 1))
+
+        # 根据配置选择通道
+        selected_channels = []
+
+        for channel in self.active_channels:
+            if channel == "ndvi" and self.compute_ndvi:
+                # 计算NDVI
+                optical_channels = self.channel_config["channel_groups"]["optical"]
+                red_idx, nir_idx = optical_channels[0], optical_channels[3]
+                ndvi = self._compute_ndvi(raw_data[red_idx], raw_data[nir_idx])
+                selected_channels.append(ndvi)
+            else:
+                selected_channels.append(raw_data[channel])
+
+        # 堆叠所有通道
+        final_data = np.stack(selected_channels, axis=0)  # (channels, height, width)
+
+        # 转换为PyTorch张量
+        data_tensor = torch.from_numpy(final_data).float()
+
+        return data_tensor
 
     def _compute_ndvi(self, red: np.ndarray, nir: np.ndarray) -> np.ndarray:
         """
@@ -456,80 +310,6 @@ class MultiModalDataset(Dataset):
 
         return ndvi
 
-    def get_sample_info(self, idx: int) -> Dict[str, Any]:
-        """
-        获取样本的详细信息（调试用）
-
-        Args:
-            idx: 样本索引
-
-        Returns:
-            包含样本详细信息的字典
-        """
-        if idx >= len(self):
-            raise IndexError(f"Index {idx} out of range")
-
-        row = self.data_index.iloc[idx]
-        sample_id = row["ID"]
-
-        # 加载数据以获取统计信息
-        try:
-            data, label = self[idx]
-
-            info = {
-                "index": idx,
-                "sample_id": sample_id,
-                "data_shape": tuple(data.shape),
-                "label": label.item() if self.has_labels else None,
-                "data_min": data.min().item(),
-                "data_max": data.max().item(),
-                "data_mean": data.mean().item(),
-                "data_std": data.std().item(),
-            }
-
-            # 各通道统计
-            channel_stats = {}
-            channel_names = [f"ch_{i}" for i in range(self.num_channels)]
-            if self.compute_ndvi:
-                channel_names.append("ndvi")
-
-            for i, name in enumerate(channel_names):
-                channel_data = data[i]
-                channel_stats[name] = {
-                    "min": channel_data.min().item(),
-                    "max": channel_data.max().item(),
-                    "mean": channel_data.mean().item(),
-                    "std": channel_data.std().item(),
-                }
-
-            info["channel_stats"] = channel_stats
-
-        except Exception as e:
-            info = {"index": idx, "sample_id": sample_id, "error": str(e)}
-
-        return info
-
-    def get_class_distribution(self) -> Dict[int, int]:
-        """
-        获取类别分布
-
-        Returns:
-            类别分布字典 {class_id: count}
-        """
-        if not self.has_labels:
-            return {}
-
-        return self.data_index["label"].value_counts().to_dict()
-
-    def get_data_statistics(self) -> Dict[str, Any]:
-        """
-        获取完整的数据统计信息
-
-        Returns:
-            数据统计字典
-        """
-        return self.stats.copy()
-
 
 # 便捷函数：创建不同配置的数据集
 def create_train_dataset(
@@ -552,11 +332,10 @@ def create_train_dataset(
         csv_file=csv_file,
         exclude_ids_file=exclude_ids_file,
         transform=transform,
+        compute_ndvi=True,
+        cache_data=True,
         channel_config=channel_config,
         usage_mode=usage_mode,
-        compute_ndvi=True,
-        validate_data=True,
-        cache_data=True,
     )
 
 
@@ -573,9 +352,8 @@ def create_test_dataset(
         csv_file=csv_file,
         exclude_ids_file=None,
         transform=transform,
+        compute_ndvi=True,
+        cache_data=True,
         channel_config=channel_config,
         usage_mode=usage_mode,
-        compute_ndvi=True,
-        validate_data=False,  # 测试集可能没有所有样本
-        cache_data=True,
     )

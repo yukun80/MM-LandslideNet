@@ -210,7 +210,7 @@ class MultiModalDataModule(pl.LightningDataModule):
 
         这是数据处理的核心方法。它根据不同的stage创建相应的数据集。
         """
-        logger.info(f"Setting up datasets for stage: {stage}")
+        logger.info(f"setup:Setting up datasets for stage: {stage}")
 
         if stage == "fit" or stage is None:
             # 创建完整的训练数据集
@@ -229,23 +229,16 @@ class MultiModalDataModule(pl.LightningDataModule):
                 val_size = int(total_size * self.val_split)
                 train_size = total_size - val_size
 
-                # 设置随机种子确保可重现性
-                generator = torch.Generator().manual_seed(self.seed)
-
                 if self.stratify and full_dataset.has_labels:
+                    labels = full_dataset.data_index["label"].tolist()
+
                     # 分层采样：保持类别比例
-                    labels = [full_dataset[i][1].item() for i in range(len(full_dataset))]
                     train_indices, val_indices = train_test_split(
                         range(len(full_dataset)), test_size=self.val_split, stratify=labels, random_state=self.seed
                     )
 
                     self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
                     self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
-                else:
-                    # 随机分割
-                    self.train_dataset, self.val_dataset = random_split(
-                        full_dataset, [train_size, val_size], generator=generator
-                    )
 
                 logger.info(f"Dataset split: Train={len(self.train_dataset)}, Val={len(self.val_dataset)}")
             else:
@@ -278,7 +271,7 @@ class MultiModalDataModule(pl.LightningDataModule):
             shuffle=self.shuffle_train,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            drop_last=True,  # 训练时丢弃最后一个不完整的批次
+            drop_last=False,  # 训练时丢弃最后一个不完整的批次
             persistent_workers=self.num_workers > 0,  # 保持工作进程活跃
         )
 
@@ -291,9 +284,9 @@ class MultiModalDataModule(pl.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
+            drop_last=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            drop_last=False,
             persistent_workers=self.num_workers > 0,
         )
 

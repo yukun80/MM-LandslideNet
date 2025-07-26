@@ -7,7 +7,7 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "optical_swin_tiny_0724-1"
+experiment_name: "optical_swin_tiny_0724"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
 version: "1.0.0"
 tags: ["optical", "baseline", "swin", "binary_classification"]
@@ -33,7 +33,7 @@ model:
     base_model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
-        model_name: "swinv2_small_window16_256"
+        model_name: "swinv2_tiny_window16_256"
         input_channels: 5
         pretrained: true
         dropout_rate: 0.2
@@ -58,16 +58,16 @@ model:
     # 优化器：AdamW with differential learning rates
     optimizer_config:
       type: "adamw"
-      adamw_params: {lr: 1e-4, weight_decay: 1e-4, betas: [0.9, 0.999]}
+      adamw_params: {lr: 4e-5, weight_decay: 1e-2, betas: [0.9, 0.95]}
       differential_lr: {enable: true, backbone_lr_ratio: 0.1, classifier_lr_ratio: 1.0}
     
     # 学习率调度器：预热 + 余弦退火
     scheduler_config:
       type: "cosine_with_warmup"
       cosine_params:
-        T_0: 10          # 第一次重启前的epoch数（通常设为总epoch数的1/5到1/3）
-        T_mult: 2        # 每次重启后周期长度的倍数
-        eta_min: 1e-6    # 最小学习率（基学习率的1/100）
+        T_0: 20          # 第一次重启前的epoch数（通常设为总epoch数的1/5到1/3）
+        T_mult: 1        # 每次重启后周期长度的倍数
+        eta_min: 1e-7    # 最小学习率（基学习率的1/100）
     
     # 评估指标
     metrics_config:
@@ -89,25 +89,26 @@ data:
 
     # === 通道配置 ===
     # 定义多模态数据的通道使用策略
-    channel_groups:
-      optical: [0, 1, 2, 3]          # R, G, B, NIR - 光学遥感数据
-      sar_amplitude: [4, 5, 8, 9]    # SAR幅度图 - 雷达数据的强度信息
-      sar_difference: [6, 7, 10, 11] # SAR差值图 - 时间变化信息  
-      derived: ["ndvi"]              # 派生指标 - 计算得出的植被指数
+    channel_config:
+      channel_groups:
+        optical: [0, 1, 2, 3]          # R, G, B, NIR - 光学遥感数据
+        sar_amplitude: [4, 5, 8, 9]    # SAR幅度图 - 雷达数据的强度信息
+        sar_difference: [6, 7, 10, 11] # SAR差值图 - 时间变化信息  
+        derived: ["ndvi"]              # 派生指标 - 计算得出的植被指数
 
-    # === 使用模式定义 - 为不同的实验提供预设的通道组合 ===
-    usage_modes:
-      optical_only:
-        groups: ["optical", "derived"]
-        description: "仅使用光学数据，适合基线实验"
-      
-      # full_multimodal:
-      #   groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
-      #   description: "使用全部模态，适合最终模型"
-      
-      # sar_focused:
-      #   groups: ["sar_amplitude", "sar_difference"]
-      #   description: "专注SAR数据，用于消融实验"
+      # === 使用模式定义 - 为不同的实验提供预设的通道组合 ===
+      usage_modes:
+        optical_only:
+          groups: ["optical", "derived"]
+          description: "仅使用光学数据，适合基线实验"
+        
+        # full_multimodal:
+        #   groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
+        #   description: "使用全部模态，适合最终模型"
+        
+        # sar_focused:
+        #   groups: ["sar_amplitude", "sar_difference"]
+        #   description: "专注SAR数据，用于消融实验"
 
     # 通道配置：仅使用光学数据
     active_mode: "optical_only"
