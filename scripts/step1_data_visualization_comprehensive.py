@@ -62,26 +62,57 @@ class MultiModalVisualizer:
             return {}
 
     def _normalize_channel(
-        self, channel_data: np.ndarray, percentile_range: Tuple[float, float] = (2, 98)
+        self,
+        channel_data: np.ndarray,
+        percentile_range: Tuple[float, float] = (2, 98),
+        channel_type: str = "optical",
     ) -> np.ndarray:
         """
         Channel data normalization
         Args:
             channel_data: Single channel data
             percentile_range: Percentile range for robust normalization
+            channel_type: Data type ('optical', 'sar_intensity', 'sar_diff')
         Returns:
             Normalized data [0, 1]
         """
-        # Handle outliers
-        data = np.clip(channel_data, -10000, 10000)
+        # Handle invalid values first
+        valid_mask = np.isfinite(channel_data)
+        if not np.any(valid_mask):
+            return np.zeros_like(channel_data)
+
+        data = channel_data.copy()
+
+        if channel_type == "sar_intensity":
+            percentile_range = (1, 99)
+            data = np.clip(data, -70, 50)  # 基于实际范围调整
+        elif channel_type == "sar_diff":
+            # SAR difference data: preserve sign and use symmetric normalization
+            percentile_range = (5, 95)  # Use wider range to preserve important changes
+            # Handle outliers
+            data = np.clip(data, -50, 50)  # Based on your channel stats
+        else:
+            # Optical data: original approach
+            data = np.clip(data, 0, 25000)  # 基于实际数据范围调整裁剪阈值
 
         # Percentile normalization
-        p_low, p_high = np.percentile(data, percentile_range)
-
-        if p_high > p_low:
-            normalized = np.clip((data - p_low) / (p_high - p_low), 0, 1)
+        if channel_type == "sar_diff":
+            # For difference data, use symmetric normalization
+            abs_data = np.abs(data[valid_mask])
+            p_high = np.percentile(abs_data, percentile_range[1])
+            if p_high > 0:
+                normalized = np.clip(data / p_high, -1, 1)
+                # Convert to [0,1] range for display
+                normalized = (normalized + 1) / 2
+            else:
+                normalized = np.ones_like(data) * 0.5
         else:
-            normalized = np.zeros_like(data)
+            # Standard percentile normalization for optical and SAR intensity
+            p_low, p_high = np.percentile(data[valid_mask], percentile_range)
+            if p_high > p_low:
+                normalized = np.clip((data - p_low) / (p_high - p_low), 0, 1)
+            else:
+                normalized = np.zeros_like(data)
 
         return normalized
 
@@ -97,6 +128,7 @@ class MultiModalVisualizer:
         rgb_image = np.zeros((data.shape[0], data.shape[1], 3))
 
         for i, ch in enumerate(channels):
+            # 根据通道类型选择合适的标准化方法
             if ch < data.shape[2]:
                 rgb_image[:, :, i] = self._normalize_channel(data[:, :, ch])
 
@@ -122,11 +154,18 @@ class MultiModalVisualizer:
         Returns:
             SAR grayscale image (H, W)
         """
-        if channel < data.shape[2]:
-            sar_data = data[:, :, channel]
-            return self._normalize_channel(sar_data)
-        else:
+        if channel >= data.shape[2]:
             return np.zeros((data.shape[0], data.shape[1]))
+
+        sar_data = data[:, :, channel]
+
+        # 根据通道类型选择合适的标准化方法
+        if channel in [4, 5, 8, 9]:  # SAR intensity channels (VV, VH)
+            return self._normalize_channel(sar_data, channel_type="sar_intensity")
+        elif channel in [6, 7, 10, 11]:  # SAR difference channels
+            return self._normalize_channel(sar_data, channel_type="sar_diff")
+        else:  # Optical channels (0, 1, 2, 3)
+            return self._normalize_channel(sar_data, channel_type="optical")
 
     def _calculate_ndvi(self, data: np.ndarray) -> np.ndarray:
         """

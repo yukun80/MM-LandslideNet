@@ -208,6 +208,7 @@ callbacks:
       patience: 20              # 早停次数
       verbose: true              # 显示详细信息
       strict: false              # 非严格模式，允许指标偶尔不存在
+      min_delta: 0.001
   
   # 学习率监控：追踪学习率变化
   lr_monitor:

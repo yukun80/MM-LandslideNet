@@ -318,7 +318,6 @@ def main():
     print("🚀 Phase 1 - Step 2: RGB Quality Score Analysis")
     print("=" * 60)
     print("📸 Analyzing RGB-based quality scores from optical channels only")
-    print("🚫 SAR channels excluded from quality assessment")
     print("=" * 60)
 
     # Initialize configuration

@@ -319,10 +319,10 @@ class LandslideClassificationModule(pl.LightningModule):
         self.train_f1(preds, y)
 
         # 记录指标
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train_loss_epoch", loss, on_step=False, on_epoch=True)  # 备用键名
-        self.log("train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train_f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        # self.log("train_loss_epoch", loss, on_step=False, on_epoch=True)  # 备用键名
+        self.log("train/accuracy", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/f1_score", self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
 
         return loss
 
@@ -362,12 +362,17 @@ class LandslideClassificationModule(pl.LightningModule):
         self.val_confmat(preds, y)
 
         # 记录指标
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_precision", self.val_precision, on_step=False, on_epoch=True)
-        self.log("val_recall", self.val_recall, on_step=False, on_epoch=True)
-        self.log("val_auroc", self.val_auroc, on_step=False, on_epoch=True)
+        self.log("validation/val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("validation/val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("validation/val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("validation/val_precision", self.val_precision, on_step=False, on_epoch=True)
+        self.log("validation/val_recall", self.val_recall, on_step=False, on_epoch=True)
+        self.log("validation/val_auroc", self.val_auroc, on_step=False, on_epoch=True)
+
+        # 🔧 兼容：保持原有命名用于ModelCheckpoint和EarlyStopping
+
+        self.log("val_f1", self.val_f1, on_step=False, on_epoch=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True)
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """
