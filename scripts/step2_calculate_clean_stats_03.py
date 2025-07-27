@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Clean Dataset Statistics Calculator (RGB-filtered)
-Calculate channel statistics (mean/std) and class balance on cleaned dataset
-after excluding low-quality images based on RGB optical channel assessment.
+清洁数据集统计计算器 (RGB过滤)
+在基于RGB光学通道评估排除低质量图像后，
+计算清洁数据集的通道统计(均值/标准差)和类别平衡。
 """
 
 import os
@@ -13,7 +13,7 @@ from pathlib import Path
 from tqdm import tqdm
 import json
 
-# Add project path
+# 添加项目路径
 sys.path.append(str(Path(__file__).parent.parent))
 
 from configs.config import Config
@@ -21,113 +21,113 @@ from configs.config import Config
 
 class RGBFilteredDatasetAnalyzer:
     """
-    Calculate statistics for dataset cleaned using RGB-based quality filtering
+    使用基于RGB的质量过滤计算清洁数据集的统计信息
     """
 
     def __init__(self, config):
-        """Initialize with project configuration"""
+        """使用项目配置初始化"""
         self.config = config
 
-        # Create output directory
+        # 创建输出目录
         self.config.create_dirs()
 
-        # Load training labels
+        # 加载训练标签
         self.train_df = pd.read_csv(self.config.TRAIN_CSV)
-        print(f"Loaded training metadata: {len(self.train_df)} samples")
+        print(f"已加载训练元数据: {len(self.train_df)} 个样本")
 
-        # Define channel groups for organized statistics
+        # 定义通道组以便组织统计
         self.channel_groups = {
             "optical": {
-                "channels": [0, 1, 2, 3],  # Red, Green, Blue, NIR
-                "name": "Sentinel-2 Optical",
-                "description": "Red, Green, Blue, Near-Infrared",
+                "channels": [0, 1, 2, 3],  # 红、绿、蓝、近红外
+                "name": "Sentinel-2 光学",
+                "description": "红、绿、蓝、近红外",
             },
             "sar_descending": {
-                "channels": [4, 5],  # VV, VH descending
-                "name": "SAR Descending",
-                "description": "VV, VH descending pass",
+                "channels": [4, 5],  # VV, VH 下行
+                "name": "SAR 下行",
+                "description": "VV, VH 下行通道",
             },
             "sar_desc_diff": {
-                "channels": [6, 7],  # Diff VV, Diff VH descending
-                "name": "SAR Descending Diff",
-                "description": "Differential VV, VH descending",
+                "channels": [6, 7],  # Diff VV, Diff VH 下行
+                "name": "SAR 下行差分",
+                "description": "VV, VH 下行差分",
             },
             "sar_ascending": {
-                "channels": [8, 9],  # VV, VH ascending
-                "name": "SAR Ascending",
-                "description": "VV, VH ascending pass",
+                "channels": [8, 9],  # VV, VH 上行
+                "name": "SAR 上行",
+                "description": "VV, VH 上行通道",
             },
             "sar_asc_diff": {
-                "channels": [10, 11],  # Diff VV, Diff VH ascending
-                "name": "SAR Ascending Diff",
-                "description": "Differential VV, VH ascending",
+                "channels": [10, 11],  # Diff VV, Diff VH 上行
+                "name": "SAR 上行差分",
+                "description": "VV, VH 上行差分",
             },
         }
 
-        print(f"📊 Channel groups defined:")
+        print(f"📊 已定义通道组:")
         for group_name, group_info in self.channel_groups.items():
-            print(f"   {group_info['name']}: channels {group_info['channels']}")
+            print(f"   {group_info['name']}: 通道 {group_info['channels']}")
 
     def load_rgb_exclusion_list(self):
         """
-        Load RGB-based exclusion list from JSON file
+        从JSON文件加载基于RGB的排除列表
         """
         exclusion_file = self.config.DATASET_ROOT / "data_check" / "exclude_ids.json"
 
         if not exclusion_file.exists():
-            raise FileNotFoundError(f"RGB exclusion list not found: {exclusion_file}")
+            raise FileNotFoundError(f"未找到RGB排除列表: {exclusion_file}")
 
-        with open(exclusion_file, "r") as f:
+        with open(exclusion_file, "r", encoding="utf-8") as f:
             exclusion_data = json.load(f)
 
         excluded_ids = set(exclusion_data["excluded_image_ids"])
-        print(f"📋 Loaded RGB-based exclusion list: {len(excluded_ids)} images to exclude")
-        print(f"   RGB threshold: {exclusion_data['threshold']:.4f}")
-        print(f"   Threshold metric: {exclusion_data.get('threshold_metric', 'rgb_std_mean')}")
-        print(f"   Exclusion method: {exclusion_data.get('threshold_method', 'RGB-based')}")
-        print(f"   Exclusion percentage: {exclusion_data['excluded_percentage']:.1f}%")
+        print(f"📋 已加载基于RGB的排除列表: {len(excluded_ids)} 张图像需要排除")
+        print(f"   RGB阈值: {exclusion_data['threshold']:.4f}")
+        print(f"   阈值指标: {exclusion_data.get('threshold_metric', 'rgb_std_mean')}")
+        print(f"   排除方法: {exclusion_data.get('threshold_method', '基于RGB')}")
+        print(f"   排除百分比: {exclusion_data['excluded_percentage']:.1f}%")
 
         return excluded_ids, exclusion_data
 
     def get_clean_dataset_info(self, excluded_ids):
         """
-        Get information about the RGB-filtered clean dataset
+        获取RGB过滤后清洁数据集的信息
         """
-        # Filter out excluded images
+        # 过滤排除的图像
         clean_mask = ~self.train_df["ID"].isin(excluded_ids)
         clean_df = self.train_df[clean_mask].copy()
 
-        print(f"\n🧹 RGB-filtered clean dataset information:")
-        print(f"   Original dataset: {len(self.train_df)} images")
-        print(f"   RGB-excluded images: {len(excluded_ids)} images")
-        print(f"   Clean dataset: {len(clean_df)} images")
-        print(f"   Retention rate: {len(clean_df)/len(self.train_df)*100:.1f}%")
+        print(f"\n🧹 RGB过滤后的清洁数据集信息:")
+        print(f"   原始数据集: {len(self.train_df)} 张图像")
+        print(f"   RGB排除的图像: {len(excluded_ids)} 张图像")
+        print(f"   清洁数据集: {len(clean_df)} 张图像")
+        print(f"   保留率: {len(clean_df)/len(self.train_df)*100:.1f}%")
 
-        # Class distribution in clean dataset
+        # 清洁数据集中的类别分布
         clean_class_counts = pd.Series(clean_df["label"]).value_counts().sort_index()
-        print(f"\n   Clean dataset class distribution:")
-        print(f"   Class 0 (Non-landslide): {clean_class_counts[0]} ({clean_class_counts[0]/len(clean_df)*100:.1f}%)")
-        print(f"   Class 1 (Landslide): {clean_class_counts[1]} ({clean_class_counts[1]/len(clean_df)*100:.1f}%)")
+        print(f"\n   清洁数据集类别分布:")
+        print(f"   类别0 (非滑坡): {clean_class_counts[0]} ({clean_class_counts[0]/len(clean_df)*100:.1f}%)")
+        print(f"   类别1 (滑坡): {clean_class_counts[1]} ({clean_class_counts[1]/len(clean_df)*100:.1f}%)")
 
-        # Compare with original distribution
+        # 与原始分布比较
         original_class_counts = pd.Series(self.train_df["label"]).value_counts().sort_index()
-        print(f"\n   Original vs RGB-Clean class retention:")
+        print(f"\n   原始vs RGB清洁类别保留情况:")
         for class_label in [0, 1]:
             original_count = original_class_counts[class_label]
             clean_count = clean_class_counts[class_label]
             retention_rate = clean_count / original_count * 100
-            print(f"   Class {class_label}: {clean_count}/{original_count} ({retention_rate:.1f}% retained)")
+            print(f"   类别{class_label}: {clean_count}/{original_count} ({retention_rate:.1f}% 保留)")
 
         return clean_df
 
     def calculate_channel_statistics_by_group(self, clean_df, excluded_ids):
         """
-        Calculate statistics for each channel group separately
+        分别计算每个通道组的统计信息
         """
-        print(f"\n📊 Calculating channel statistics by group on RGB-filtered dataset...")
-        print(f"Processing {len(clean_df)} clean images...")
+        print(f"\n📊 在RGB过滤数据集上按组计算通道统计...")
+        print(f"正在处理 {len(clean_df)} 张清洁图像...")
 
-        # Initialize data collection by channel group
+        # 按通道组初始化数据收集
         group_data = {}
         for group_name, group_info in self.channel_groups.items():
             group_data[group_name] = {channel: [] for channel in group_info["channels"]}
@@ -135,32 +135,32 @@ class RGBFilteredDatasetAnalyzer:
         processed_count = 0
         failed_loads = []
 
-        for idx, row in tqdm(clean_df.iterrows(), total=len(clean_df), desc="Processing RGB-clean images"):
+        for idx, row in tqdm(clean_df.iterrows(), total=len(clean_df), desc="处理RGB清洁图像"):
 
             image_id = row["ID"]
 
-            # Skip if in exclusion list (double check)
+            # 如果在排除列表中则跳过(双重检查)
             if image_id in excluded_ids:
                 continue
 
             image_path = self.config.TRAIN_DATA_DIR / f"{image_id}.npy"
 
             try:
-                # Load image data
+                # 加载图像数据
                 if not image_path.exists():
-                    print(f"Warning: Image file not found: {image_path}")
+                    print(f"警告: 未找到图像文件: {image_path}")
                     failed_loads.append(image_id)
                     continue
 
                 image_data = np.load(image_path)
 
-                # Validate shape
+                # 验证形状
                 if image_data.shape != (self.config.IMG_HEIGHT, self.config.IMG_WIDTH, self.config.IMG_CHANNELS):
-                    print(f"Warning: Unexpected shape for {image_id}: {image_data.shape}")
+                    print(f"警告: {image_id} 的形状意外: {image_data.shape}")
                     failed_loads.append(image_id)
                     continue
 
-                # Collect data for each channel group
+                # 为每个通道组收集数据
                 for group_name, group_info in self.channel_groups.items():
                     for channel in group_info["channels"]:
                         channel_data = image_data[:, :, channel].flatten()
@@ -169,26 +169,26 @@ class RGBFilteredDatasetAnalyzer:
                 processed_count += 1
 
             except Exception as e:
-                print(f"Error processing {image_id}: {str(e)}")
+                print(f"处理 {image_id} 时出错: {str(e)}")
                 failed_loads.append(image_id)
                 continue
 
-        print(f"✅ Successfully processed {processed_count} RGB-clean images")
+        print(f"✅ 成功处理了 {processed_count} 张RGB清洁图像")
         if failed_loads:
-            print(f"❌ Failed to load {len(failed_loads)} images")
+            print(f"❌ 失败加载 {len(failed_loads)} 张图像")
 
         return group_data, processed_count
 
     def compute_group_statistics(self, group_data):
         """
-        Compute statistics for each channel group
+        计算每个通道组的统计信息
         """
-        print("📈 Computing channel group statistics...")
+        print("📈 计算通道组统计...")
 
         group_stats = {}
 
         for group_name, group_info in self.channel_groups.items():
-            print(f"\n🔍 Processing {group_info['name']} channels...")
+            print(f"\n🔍 正在处理 {group_info['name']} 通道...")
 
             group_stats[group_name] = {
                 "name": group_info["name"],
@@ -200,7 +200,7 @@ class RGBFilteredDatasetAnalyzer:
                 if len(group_data[group_name][channel]) > 0:
                     channel_values = np.array(group_data[group_name][channel])
 
-                    # Calculate comprehensive statistics
+                    # 计算综合统计
                     mean_val = float(np.mean(channel_values))
                     std_val = float(np.std(channel_values))
                     min_val = float(np.min(channel_values))
@@ -223,21 +223,21 @@ class RGBFilteredDatasetAnalyzer:
                     }
 
                     print(
-                        f"   Channel {channel:2d} ({self.config.CHANNEL_DESCRIPTIONS[channel]:25s}): "
-                        f"mean={mean_val:8.3f}, std={std_val:8.3f}"
+                        f"   通道 {channel:2d} ({self.config.CHANNEL_DESCRIPTIONS[channel]:25s}): "
+                        f"均值={mean_val:8.3f}, 标准差={std_val:8.3f}"
                     )
                 else:
-                    print(f"Warning: No data for channel {channel}")
+                    print(f"警告: 通道 {channel} 没有数据")
 
         return group_stats
 
     def save_final_statistics(self, group_stats, clean_df, excluded_ids, exclusion_data, processed_count):
         """
-        Save comprehensive statistics for RGB-filtered dataset
+        保存RGB过滤数据集的综合统计信息
         """
-        print(f"\n💾 Saving final RGB-filtered statistics...")
+        print(f"\n💾 保存最终RGB过滤统计...")
 
-        # Prepare comprehensive statistics
+        # 准备综合统计
         final_stats = {
             "dataset_info": {
                 "original_image_count": len(self.train_df),
@@ -246,9 +246,9 @@ class RGBFilteredDatasetAnalyzer:
                 "processed_image_count": processed_count,
                 "retention_rate": len(clean_df) / len(self.train_df),
                 "exclusion_threshold": exclusion_data["threshold"],
-                "exclusion_method": exclusion_data.get("threshold_method", "rgb_optical_channels_only_5th_percentile"),
+                "exclusion_method": exclusion_data.get("threshold_method", "rgb_光学通道_第5百分位数"),
                 "exclusion_metric": exclusion_data.get("threshold_metric", "rgb_std_mean"),
-                "filtering_approach": "RGB_optical_channels_only",
+                "filtering_approach": "RGB_光学通道_仅限",
             },
             "class_distribution": {
                 "original": {
@@ -273,19 +273,19 @@ class RGBFilteredDatasetAnalyzer:
             },
             "quality_assessment_info": {
                 "rgb_quality_filtering": True,
-                "rgb_channels_used": [0, 1, 2],  # Red, Green, Blue
+                "rgb_channels_used": [0, 1, 2],  # 红、绿、蓝
                 "sar_channels_excluded_from_quality": [4, 5, 6, 7, 8, 9, 10, 11],
                 "quality_metrics": ["rgb_std_mean", "rgb_contrast", "rgb_brightness"],
                 "threshold_percentile": exclusion_data.get("statistics", {}).get("threshold_percentile", 5.0),
             },
             "processing_info": {
-                "script_version": "2.0_RGB_filtered",
+                "script_version": "2.0_RGB过滤",
                 "processing_date": pd.Timestamp.now().isoformat(),
                 "config_file": "configs/config.py",
             },
         }
 
-        # Calculate class balance metrics
+        # 计算类别平衡指标
         clean_class_counts = pd.Series(clean_df["label"]).value_counts().sort_index()
         class_balance = {
             "class_0_count": int(clean_class_counts[0]),
@@ -298,88 +298,88 @@ class RGBFilteredDatasetAnalyzer:
 
         final_stats["class_balance"] = class_balance
 
-        # Save to JSON
+        # 保存到JSON
         output_file = self.config.DATASET_ROOT / "data_check" / "channel_stats.json"
-        with open(output_file, "w") as f:
-            json.dump(final_stats, f, indent=2)
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(final_stats, f, indent=2, ensure_ascii=False)
 
-        print(f"✅ Final RGB-filtered statistics saved to: {output_file}")
+        print(f"✅ 最终RGB过滤统计已保存到: {output_file}")
 
-        # Print comprehensive summary
-        print(f"\n📋 Final RGB-Filtered Dataset Summary:")
-        print(f"   📸 Filtering method: RGB optical channels only (channels 0-2)")
-        print(f"   🧹 Clean images: {len(clean_df)} (retention: {len(clean_df)/len(self.train_df)*100:.1f}%)")
+        # 打印综合摘要
+        print(f"\n📋 最终RGB过滤数据集摘要:")
+        print(f"   📸 过滤方法: 仅RGB光学通道 (通道0-2)")
+        print(f"   🧹 清洁图像: {len(clean_df)} (保留率: {len(clean_df)/len(self.train_df)*100:.1f}%)")
         print(
-            f"   ⚖️  Class balance: {class_balance['class_0_count']} : {class_balance['class_1_count']} "
-            f"(ratio: {class_balance['imbalance_ratio']:.2f})"
+            f"   ⚖️  类别平衡: {class_balance['class_0_count']} : {class_balance['class_1_count']} "
+            f"(比例: {class_balance['imbalance_ratio']:.2f})"
         )
-        print(f"   📊 Channel groups processed: {len(group_stats)}")
+        print(f"   📊 处理的通道组: {len(group_stats)}")
         print(
-            f"   🎯 Total pixels processed: {processed_count * self.config.IMG_HEIGHT * self.config.IMG_WIDTH * self.config.IMG_CHANNELS:,}"
+            f"   🎯 总处理像素: {processed_count * self.config.IMG_HEIGHT * self.config.IMG_WIDTH * self.config.IMG_CHANNELS:,}"
         )
 
-        print(f"\n📈 Channel Group Statistics Summary:")
+        print(f"\n📈 通道组统计摘要:")
         for group_name, group_info in group_stats.items():
             channel_count = len(group_info["channels"])
-            print(f"   {group_info['name']:20s}: {channel_count} channels processed")
+            print(f"   {group_info['name']:20s}: {channel_count} 个通道已处理")
 
         return output_file
 
 
 def main():
-    """Main execution function"""
-    print("🚀 Phase 1 - Step 3: RGB-Filtered Clean Dataset Statistics")
+    """主执行函数"""
+    print("🚀 阶段1 - 步骤3: RGB过滤的清洁数据集统计")
     print("=" * 70)
-    print("📸 Using RGB-based quality assessment for data filtering")
-    print("🚫 SAR channels excluded from quality assessment (but included in statistics)")
+    print("📸 使用基于RGB的质量评估进行数据过滤")
+    print("🚫 SAR通道已从质量评估中排除(但包含在统计中)")
     print("=" * 70)
 
-    # Initialize configuration
+    # 初始化配置
     config = Config()
 
-    # Check if train data directory exists
+    # 检查训练数据目录是否存在
     if not config.TRAIN_DATA_DIR.exists():
-        print(f"❌ Training data directory not found: {config.TRAIN_DATA_DIR}")
-        print("Please ensure the training data (.npy files) are available.")
+        print(f"❌ 未找到训练数据目录: {config.TRAIN_DATA_DIR}")
+        print("请确保训练数据(.npy文件)可用。")
         return False
 
-    # Initialize analyzer
+    # 初始化分析器
     analyzer = RGBFilteredDatasetAnalyzer(config)
 
     try:
-        # Load RGB-based exclusion list
+        # 加载基于RGB的排除列表
         excluded_ids, exclusion_data = analyzer.load_rgb_exclusion_list()
 
-        # Get clean dataset information
+        # 获取清洁数据集信息
         clean_df = analyzer.get_clean_dataset_info(excluded_ids)
 
-        # Calculate channel statistics by group
+        # 按组计算通道统计
         group_data, processed_count = analyzer.calculate_channel_statistics_by_group(clean_df, excluded_ids)
 
-        # Compute group statistics
+        # 计算组统计
         group_stats = analyzer.compute_group_statistics(group_data)
 
         if not group_stats:
-            print("❌ No channel statistics were calculated!")
+            print("❌ 没有计算通道统计!")
             return False
 
-        # Save final statistics
+        # 保存最终统计
         output_file = analyzer.save_final_statistics(
             group_stats, clean_df, excluded_ids, exclusion_data, processed_count
         )
 
-        print("\n🎉 Step 3 completed successfully!")
-        print(f"📊 Definitive RGB-filtered channel statistics: {output_file}")
-        print("🎯 Phase 1 RGB-based data cleaning completed!")
-        print("\n✨ Key improvements over previous approach:")
-        print("   • RGB-only quality assessment (more reliable)")
-        print("   • Separate statistics by channel type")
-        print("   • Preserved SAR data while filtering on optical quality")
+        print("\n🎉 步骤3完成!")
+        print(f"📊 确定的RGB过滤通道统计: {output_file}")
+        print("🎯 阶段1 基于RGB的数据清理完成!")
+        print("\n✨ 相比以前方法的关键改进:")
+        print("   • 仅RGB质量评估(更可靠)")
+        print("   • 按通道类型分别统计")
+        print("   • 在光学质量过滤时保留了SAR数据")
 
         return True
 
     except Exception as e:
-        print(f"❌ Error in RGB-filtered statistics calculation: {str(e)}")
+        print(f"❌ RGB过滤统计计算出错: {str(e)}")
         import traceback
 
         traceback.print_exc()

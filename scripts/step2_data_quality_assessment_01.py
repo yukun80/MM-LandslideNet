@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """
-Data Quality Assessment Script (RGB-based)
-Calculate quality metrics using only RGB channels (0-2) from Sentinel-2 optical data
-to identify low-information content samples, avoiding SAR noise interference.
+数据质量评估脚本 (基于RGB)
+仅使用Sentinel-2光学数据的RGB通道(0-2)计算质量指标
+识别低信息含量样本，避免SAR噪声干扰。
 """
 
 import os
@@ -13,7 +12,7 @@ from pathlib import Path
 from tqdm import tqdm
 import json
 
-# Add project path
+# 添加项目路径
 sys.path.append(str(Path(__file__).parent.parent))
 
 from configs.config import Config
@@ -21,37 +20,37 @@ from configs.config import Config
 
 class RGBQualityAssessment:
     """
-    RGB-based data quality assessment using only optical channels (0-2)
-    Avoids SAR noise interference in quality evaluation
+    基于RGB的数据质量评估，仅使用光学通道(0-2)
+    避免SAR噪声对质量评估的干扰
     """
 
     def __init__(self, config):
-        """Initialize with project configuration"""
+        """使用项目配置初始化"""
         self.config = config
 
-        # Create output directory
+        # 创建输出目录
         self.config.create_dirs()
 
-        # Load training labels
+        # 加载训练标签
         self.train_df = pd.read_csv(self.config.TRAIN_CSV)
-        print(f"Loaded training metadata: {len(self.train_df)} samples")
+        print(f"已加载训练元数据: {len(self.train_df)} 个样本")
 
-        # RGB channel indices (Sentinel-2 optical data)
-        self.rgb_channels = [0, 1, 2]  # Red, Green, Blue
-        print("📸 Using RGB channels for quality assessment:")
+        # RGB通道索引 (Sentinel-2 光学数据)
+        self.rgb_channels = [0, 1, 2]  # 红、绿、蓝
+        print("📸 使用RGB通道进行质量评估:")
         for idx in self.rgb_channels:
-            print(f"   Channel {idx}: {self.config.CHANNEL_DESCRIPTIONS[idx]}")
+            print(f"   通道 {idx}: {self.config.CHANNEL_DESCRIPTIONS[idx]}")
 
     def calculate_rgb_quality_score(self, image_data):
         """
-        Calculate quality score using only RGB channels
-        Args:
-            image_data: numpy array of shape (H, W, C)
-        Returns:
-            dict: RGB quality metrics
+        仅使用RGB通道计算质量分数
+        参数:
+            image_data: 形状为 (H, W, C) 的numpy数组
+        返回:
+            dict: RGB质量指标
         """
         if len(image_data.shape) != 3:
-            print(f"Warning: Unexpected image shape {image_data.shape}")
+            print(f"警告: 意外的图像形状 {image_data.shape}")
             return {
                 "rgb_std_red": 0.0,
                 "rgb_std_green": 0.0,
@@ -61,28 +60,28 @@ class RGBQualityAssessment:
                 "rgb_brightness": 0.0,
             }
 
-        # Extract RGB channels
-        rgb_data = image_data[:, :, self.rgb_channels]  # Shape: (H, W, 3)
+        # 提取RGB通道
+        rgb_data = image_data[:, :, self.rgb_channels]  # 形状: (H, W, 3)
 
-        # Calculate individual channel statistics
+        # 计算各通道统计
         red_channel = rgb_data[:, :, 0]
         green_channel = rgb_data[:, :, 1]
         blue_channel = rgb_data[:, :, 2]
 
-        # Standard deviation for each RGB channel
+        # 每个RGB通道的标准差
         red_std = np.std(red_channel)
         green_std = np.std(green_channel)
         blue_std = np.std(blue_channel)
 
-        # Mean of RGB standard deviations
+        # RGB标准差的平均值
         rgb_std_mean = np.mean([red_std, green_std, blue_std])
 
-        # Additional quality metrics
-        # Contrast: standard deviation of the grayscale image
+        # 额外的质量指标
+        # 对比度: 灰度图像的标准差
         grayscale = 0.299 * red_channel + 0.587 * green_channel + 0.114 * blue_channel
         rgb_contrast = np.std(grayscale)
 
-        # Brightness: mean of the grayscale image
+        # 亮度: 灰度图像的平均值
         rgb_brightness = np.mean(grayscale)
 
         return {
@@ -96,32 +95,32 @@ class RGBQualityAssessment:
 
     def assess_all_training_images(self):
         """
-        Process all training images and calculate RGB quality scores
+        处理所有训练图像并计算RGB质量分数
         """
-        print("🔍 Starting RGB-based data quality assessment...")
-        print(f"Processing {len(self.train_df)} training samples...")
+        print("🔍 开始基于RGB的数据质量评估...")
+        print(f"正在处理 {len(self.train_df)} 个训练样本...")
 
         quality_scores = []
         failed_loads = []
 
-        for idx, row in tqdm(self.train_df.iterrows(), total=len(self.train_df), desc="Assessing RGB quality"):
+        for idx, row in tqdm(self.train_df.iterrows(), total=len(self.train_df), desc="评估RGB质量"):
 
             image_id = row["ID"]
             image_path = self.config.TRAIN_DATA_DIR / f"{image_id}.npy"
 
             try:
-                # Load image data
+                # 加载图像数据
                 if not image_path.exists():
-                    print(f"Warning: Image file not found: {image_path}")
+                    print(f"警告: 未找到图像文件: {image_path}")
                     failed_loads.append(image_id)
                     continue
 
                 image_data = np.load(image_path)
 
-                # Calculate RGB quality score
+                # 计算RGB质量分数
                 quality_metrics = self.calculate_rgb_quality_score(image_data)
 
-                # Store result
+                # 存储结果
                 result = {
                     "image_id": image_id,
                     "label": row["label"],
@@ -131,85 +130,85 @@ class RGBQualityAssessment:
                 quality_scores.append(result)
 
             except Exception as e:
-                print(f"Error processing {image_id}: {str(e)}")
+                print(f"处理 {image_id} 时出错: {str(e)}")
                 failed_loads.append(image_id)
                 continue
 
-        print(f"✅ Successfully processed {len(quality_scores)} images")
+        print(f"✅ 成功处理了 {len(quality_scores)} 张图像")
         if failed_loads:
-            print(f"❌ Failed to load {len(failed_loads)} images")
-            print("Failed images:", failed_loads[:10], "..." if len(failed_loads) > 10 else "")
+            print(f"❌ 失败加载 {len(failed_loads)} 张图像")
+            print("失败的图像:", failed_loads[:10], "..." if len(failed_loads) > 10 else "")
 
         return quality_scores
 
     def save_quality_scores(self, quality_scores):
         """
-        Save RGB quality scores to CSV file
+        将RGB质量分数保存到CSV文件
         """
         output_file = self.config.DATASET_ROOT / "data_check" / "image_quality_scores.csv"
 
-        # Convert to DataFrame
+        # 转换为DataFrame
         df = pd.DataFrame(quality_scores)
 
-        # Sort by RGB mean standard deviation (descending - highest quality first)
+        # 按RGB平均标准差排序 (降序 - 最高质量在前)
         df = df.sort_values("rgb_std_mean", ascending=False)
 
-        # Save to CSV
+        # 保存到CSV
         df.to_csv(output_file, index=False)
 
-        print(f"💾 RGB quality scores saved to: {output_file}")
-        print(f"RGB Quality Score Statistics:")
-        print(f"  RGB Mean Std - Mean: {df['rgb_std_mean'].mean():.4f}")
-        print(f"  RGB Mean Std - Median: {df['rgb_std_mean'].median():.4f}")
-        print(f"  RGB Mean Std - Min: {df['rgb_std_mean'].min():.4f}")
-        print(f"  RGB Mean Std - Max: {df['rgb_std_mean'].max():.4f}")
-        print(f"  RGB Mean Std - Std: {df['rgb_std_mean'].std():.4f}")
+        print(f"💾 RGB质量分数已保存到: {output_file}")
+        print(f"RGB质量分数统计:")
+        print(f"  RGB平均标准差 - 均值: {df['rgb_std_mean'].mean():.4f}")
+        print(f"  RGB平均标准差 - 中位数: {df['rgb_std_mean'].median():.4f}")
+        print(f"  RGB平均标准差 - 最小值: {df['rgb_std_mean'].min():.4f}")
+        print(f"  RGB平均标准差 - 最大值: {df['rgb_std_mean'].max():.4f}")
+        print(f"  RGB平均标准差 - 标准差: {df['rgb_std_mean'].std():.4f}")
 
-        print(f"\n  RGB Contrast - Mean: {df['rgb_contrast'].mean():.4f}")
-        print(f"  RGB Contrast - Median: {df['rgb_contrast'].median():.4f}")
+        print(f"\n  RGB对比度 - 均值: {df['rgb_contrast'].mean():.4f}")
+        print(f"  RGB对比度 - 中位数: {df['rgb_contrast'].median():.4f}")
 
-        print(f"\n  Individual Channel Statistics:")
-        print(f"  Red Std   - Mean: {df['rgb_std_red'].mean():.4f}, Median: {df['rgb_std_red'].median():.4f}")
-        print(f"  Green Std - Mean: {df['rgb_std_green'].mean():.4f}, Median: {df['rgb_std_green'].median():.4f}")
-        print(f"  Blue Std  - Mean: {df['rgb_std_blue'].mean():.4f}, Median: {df['rgb_std_blue'].median():.4f}")
+        print(f"\n  各通道统计:")
+        print(f"  红色标准差   - 均值: {df['rgb_std_red'].mean():.4f}, 中位数: {df['rgb_std_red'].median():.4f}")
+        print(f"  绿色标准差 - 均值: {df['rgb_std_green'].mean():.4f}, 中位数: {df['rgb_std_green'].median():.4f}")
+        print(f"  蓝色标准差  - 均值: {df['rgb_std_blue'].mean():.4f}, 中位数: {df['rgb_std_blue'].median():.4f}")
 
         return output_file, df
 
 
 def main():
-    """Main execution function"""
-    print("🚀 Phase 1 - Step 1: RGB-Based Data Quality Assessment")
+    """主执行函数"""
+    print("🚀 阶段1 - 步骤1: 基于RGB的数据质量评估")
     print("=" * 60)
-    print("📸 Using only RGB channels (0-2) from Sentinel-2 optical data")
-    print("🚫 Excluding SAR channels to avoid noise interference")
+    print("📸 仅使用Sentinel-2光学数据的RGB通道(0-2)")
+    print("🚫 排除SAR通道以避免噪声干扰")
     print("=" * 60)
 
-    # Initialize configuration
+    # 初始化配置
     config = Config()
 
-    # Check if train data directory exists
+    # 检查训练数据目录是否存在
     if not config.TRAIN_DATA_DIR.exists():
-        print(f"❌ Training data directory not found: {config.TRAIN_DATA_DIR}")
-        print("Please ensure the training data (.npy files) are available.")
+        print(f"❌ 未找到训练数据目录: {config.TRAIN_DATA_DIR}")
+        print("请确保训练数据(.npy文件)可用。")
         return False
 
-    # Initialize assessment tool
+    # 初始化评估工具
     assessor = RGBQualityAssessment(config)
 
-    # Process all training images
+    # 处理所有训练图像
     quality_scores = assessor.assess_all_training_images()
 
     if not quality_scores:
-        print("❌ No images were successfully processed!")
+        print("❌ 没有图像被成功处理!")
         return False
 
-    # Save results
+    # 保存结果
     output_file, df = assessor.save_quality_scores(quality_scores)
 
-    print("\n🎉 Step 1 completed successfully!")
-    print(f"📊 RGB quality assessment results saved to: {output_file}")
-    print(f"📈 Processed {len(df)} images with RGB quality scores")
-    print("🎯 Ready for Step 2: RGB quality analysis and threshold determination")
+    print("\n🎉 步骤1完成!")
+    print(f"📊 RGB质量评估结果已保存到: {output_file}")
+    print(f"📈 处理了 {len(df)} 张图像的RGB质量分数")
+    print("🎯 准备步骤2: RGB质量分析和阈值确定")
 
     return True
 

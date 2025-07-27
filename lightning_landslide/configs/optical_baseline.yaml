@@ -1,0 +1,320 @@
+# =============================================================================
+# configs/experiment/optical_baseline.yaml - 光学基线实验配置
+# =============================================================================
+
+# 这是一个完整的实验配置文件，它将所有的组件组合在一起
+# 这个文件展示了"配置驱动"设计的威力：一个YAML文件定义整个实验
+
+# === 实验元信息 ===
+# 每个实验都应该有清晰的身份和目标
+experiment_name: "optical_swin_tiny_0724"
+description: "Optical baseline using Swin Transformer Tiny for landslide detection"
+version: "1.0.0"
+tags: ["optical", "baseline", "swin", "binary_classification"]
+
+# 研究人员信息（便于团队协作）
+author: "MM-LandslideNet Team"
+created_date: "2024-01-15"
+notes: |
+  This experiment serves as the optical baseline for our multi-modal landslide detection project.
+  It uses only optical channels (R,G,B,NIR,NDVI) with a Swin Transformer Tiny backbone.
+  Expected to achieve ~80% F1 score based on preliminary experiments.
+
+# === 全局设置 ===
+seed: 3407                    # 随机种子，确保实验可重现
+log_level: "INFO"           # 日志级别：DEBUG/INFO/WARNING/ERROR
+
+# === 模型配置 ===
+# 这里我们引用了之前定义的模型配置，并做了实验特定的调整
+model:
+  target: lightning_landslide.src.models.LandslideClassificationModule
+  params:
+    # 基础模型：Swin Transformer
+    base_model:
+      target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
+      params:
+        model_name: "swinv2_tiny_window16_256"
+        input_channels: 5
+        pretrained: true
+        dropout_rate: 0.2
+        pretrained_path: null
+        img_size: 256
+        # num_classes: 1
+        # freeze_backbone: false
+    
+    # === 分类头配置 ===
+    # 定义从特征到最终预测的映射
+    classifier_config:
+      type: "simple"              # 分类头类型：simple/mlp/attention
+      hidden_dim: null            # MLP分类头的隐藏维度（simple类型时忽略）
+      use_batch_norm: false       # 是否使用批标准化
+      activation: "relu"          # 分类头中的激活函数
+
+    # 损失函数：使用Focal Loss处理类别不平衡
+    loss_config:
+      type: "focal"
+      focal_params: {alpha: 0.25, gamma: 2.0} # 或者0.25，需要实验？
+    
+    # 优化器：AdamW with differential learning rates
+    optimizer_config:
+      type: "adamw"
+      adamw_params: {lr: 4e-5, weight_decay: 1e-2, betas: [0.9, 0.95]}
+      differential_lr: {enable: true, backbone_lr_ratio: 0.1, classifier_lr_ratio: 1.0}
+    
+    # 学习率调度器：预热 + 余弦退火
+    scheduler_config:
+      type: "cosine_with_warmup"
+      cosine_params:
+        T_0: 20          # 第一次重启前的epoch数（通常设为总epoch数的1/5到1/3）
+        T_mult: 1        # 每次重启后周期长度的倍数
+        eta_min: 1e-7    # 最小学习率（基学习率的1/100）
+    
+    # 评估指标
+    metrics_config:
+      primary_metric: "f1"
+      metrics: ["accuracy", "precision", "recall", "f1", "auroc"]
+      threshold: 0.5
+
+# === 数据配置 ===
+# 定义数据处理管道
+data:
+  target: lightning_landslide.src.data.MultiModalDataModule
+  params:
+    # 数据路径
+    train_data_dir: "dataset/train_data"
+    test_data_dir: "dataset/test_data"
+    train_csv: "dataset/Train.csv"
+    test_csv: "dataset/Test.csv"
+    exclude_ids_file: "dataset/data_check/exclude_ids.json"
+
+    # === 通道配置 ===
+    # 定义多模态数据的通道使用策略
+    channel_config:
+      channel_groups:
+        optical: [0, 1, 2, 3]          # R, G, B, NIR - 光学遥感数据
+        sar_amplitude: [4, 5, 8, 9]    # SAR幅度图 - 雷达数据的强度信息
+        sar_difference: [6, 7, 10, 11] # SAR差值图 - 时间变化信息  
+        derived: ["ndvi"]              # 派生指标 - 计算得出的植被指数
+
+      # === 使用模式定义 - 为不同的实验提供预设的通道组合 ===
+      usage_modes:
+        optical_only:
+          groups: ["optical", "derived"]
+          description: "仅使用光学数据，适合基线实验"
+        
+        # full_multimodal:
+        #   groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
+        #   description: "使用全部模态，适合最终模型"
+        
+        # sar_focused:
+        #   groups: ["sar_amplitude", "sar_difference"]
+        #   description: "专注SAR数据，用于消融实验"
+
+    # 通道配置：仅使用光学数据
+    active_mode: "optical_only"
+    
+    # 数据加载配置
+    batch_size: 16
+    num_workers: 8
+    pin_memory: true
+    
+    # 数据分割
+    val_split: 0.2
+    stratify: true
+    shuffle_train: true
+
+    # === 数据预处理配置 ===
+    preprocessing:
+      # 标准化参数 - 基于您的数据统计计算得出
+      normalization:
+        # 12个原始通道的均值和标准差
+        means: [1849.282, 1953.906, 1896.493, 3291.47, -9.624, -17.110, 
+                -0.699, -0.483, -10.671, -18.442, 0.248, -0.234]
+        stds: [1414.462, 1338.292, 1342.528, 1448.362, 7.904, 9.245, 
+              4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
+      
+      # NDVI计算配置
+      ndvi_computation:
+        red_channel_idx: 0      # 红光通道索引
+        nir_channel_idx: 3      # 近红外通道索引
+        epsilon: 1e-8           # 避免除零的小值
+        clip_range: [-1, 1]     # NDVI值裁剪范围
+
+    # === 数据增强配置 ===
+    # 数据增强：适度的增强策略
+    augmentation:
+      train:
+        resize: 256
+        # 几何增强
+        geometric:
+          random_flip: true
+          h_flip_prob: 0.5
+          v_flip_prob: 0.5
+          random_rotation: true
+          rotation_prob: 0.3
+          rotation_degrees: [-10, 10]
+        # 光谱增强
+        spectral:
+          spectral_noise: true
+          noise_std: 0.005
+          noise_prob: 0.3
+      val: {resize: 256}
+      test: {resize: 256}
+
+# === 训练器配置 ===
+# PyTorch Lightning Trainer的配置
+trainer:
+  target: pytorch_lightning.Trainer
+  params:
+    # 基础训练配置
+    max_epochs: 100
+    accelerator: "gpu"         # 使用GPU
+    devices: 1                 # 使用1个GPU
+    precision: "32-true"       # 使用32位精度，不使用混合精度
+    
+    # 验证配置
+    val_check_interval: 1.0     # 每个epoch后验证，每个epoch验证一次
+    check_val_every_n_epoch: 1  # 每个epoch验证一次
+    
+    # 梯度配置
+    gradient_clip_val: 1.0      # 梯度裁剪
+    accumulate_grad_batches: 1  # 梯度累积
+    
+    # 性能优化
+    enable_progress_bar: true   # 显示进度条
+    enable_model_summary: true  # 显示模型摘要
+    deterministic: false        # 为了性能，不要求完全确定性
+
+# === 回调函数配置 ===
+# 定义训练过程中的监控、保存和控制策略
+callbacks:
+  # 模型检查点：保存最好的模型
+  model_checkpoint:
+    target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      filename: "best-{epoch:02d}-{val_f1:.4f}"
+      monitor: "val_f1"         # 监控指标
+      mode: "max"               # 最大值
+      save_top_k: 1              # 保存最好的1个模型
+      save_last: true            # 保存最后一个模型
+      verbose: true              # 显示详细信息
+  
+  # 早停：防止过拟合
+  early_stopping:
+    target: pytorch_lightning.callbacks.EarlyStopping
+    params:
+      monitor: "val_f1"         # 监控指标
+      mode: "max"               # 最大值
+      patience: 20              # 早停次数
+      verbose: true              # 显示详细信息
+      strict: false              # 非严格模式，允许指标偶尔不存在
+      min_delta: 0.001
+  
+  # 学习率监控：追踪学习率变化
+  lr_monitor:
+    target: pytorch_lightning.callbacks.LearningRateMonitor
+    params:
+      logging_interval: "epoch"  # 记录学习率变化
+      log_momentum: false        # 不记录动量
+  
+  # 自定义回调：模型统计和可视化
+  metrics_logger:
+    target: lightning_landslide.src.utils.metrics.MetricsLogger
+    params:
+      summary_interval: 5  # 每5个epoch打印详细总结
+      save_history: true   # 保存完整历史
+
+# === 日志记录器配置 ===
+# 定义实验追踪和可视化方式
+loggers:
+  # TensorBoard：本地可视化
+  tensorboard:
+    target: pytorch_lightning.loggers.TensorBoardLogger
+    params:
+      log_graph: false           # 记录计算图
+      default_hp_metric: true   # 记录默认超参数指标
+      name: ""                  # 🔧 关键修复：设置为空字符串，避免创建lightning_logs目录
+      version: ""               # 🔧 关键修复：设置为空字符串，避免创建version_X目录
+  
+  # 可选：添加W&B日志记录器（如果需要在线追踪）
+  # wandb:
+  #   target: pytorch_lightning.loggers.WandbLogger
+  #   params:
+  #     project: "mm-landslide-net"  # 项目名称
+  #     name: "optical_swin_tiny_baseline"  # 实验名称
+  #     tags: ["optical", "baseline", "swin"]  # 标签
+
+# === 输出目录配置 ===
+# 定义所有输出文件的保存位置
+outputs:
+  base_output_dir: "lightning_landslide/exp"
+
+  # 路径会保存到experiment_name
+  checkpoint_subdir: "checkpoints"
+  log_subdir: "log"
+  predictions_subdir: "predictions"
+  figures_subdir: "figures"
+
+  # result_prefix: "optical_swin_tiny_baseline"
+  # timestamp_format: "%Y%m%d_%H%M%S"
+
+# === 硬件和性能配置 ===
+compute:
+  # GPU配置
+  gpu_ids: [0]                  # 使用的GPU列表
+  mixed_precision: false        # 不启用混合精度训练
+  
+  # 内存优化
+  find_unused_parameters: false # DDP时是否查找未使用参数
+  sync_batchnorm: true          # 是否同步批标准化
+
+  # 性能监控
+  profiler: null                # 性能分析器：null/simple/advanced/pytorch
+  
+# === 实验特定配置 ===
+# 这个实验的特殊设置和超参数
+experiment_config:
+  # 数据平衡策略
+  class_balance_strategy: "focal_loss"  # focal_loss/weighted_sampling/cost_sensitive
+  
+  # 评估策略
+  evaluation_strategy:
+    use_tta: true                       # 测试时增强
+    tta_augmentations: 4                # TTA增强次数
+    confidence_threshold: 0.5           # 预测置信度阈值
+  
+  # 结果报告配置
+  reporting:
+    generate_confusion_matrix: true  # 生成混淆矩阵
+    generate_roc_curve: true         # 生成ROC曲线
+    generate_precision_recall_curve: true  # 生成精确率-召回率曲线
+    save_predictions: true           # 保存预测结果
+    save_model_summary: true         # 保存模型摘要
+
+# === 调试和开发配置 ===
+# 开发和调试时的特殊设置
+debug:
+  # 快速开发模式
+  fast_dev_run: false           # 只运行几个batch进行调试
+  overfit_batches: 0.0          # 过拟合特定batch数量（调试用）
+  
+  # 数据验证
+  validate_data_on_start: true  # 训练前验证数据完整性
+  
+  # 模型验证
+  run_model_test: false         # 运行模型的单元测试
+  
+  # 性能分析
+  profile_model: false          # 对模型进行性能分析
+  
+# === 实验记录 ===
+# 便于后续分析和比较的实验记录
+experiment_log:
+  expected_metrics:
+    val_f1: 0.90                # 预期的F1分数
+    val_accuracy: 0.85          # 预期的准确率
+    training_time_hours: 1.0    # 预期的训练时间
+  
+  baseline_comparison:
+    previous_best_f1: 0.85      # 之前最好的F1分数
+    improvement_target: 0.05    # 目标改进幅度

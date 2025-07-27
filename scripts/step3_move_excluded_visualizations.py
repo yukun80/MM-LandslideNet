@@ -15,6 +15,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from configs.config import Config
 
+"""
+python scripts/step3_move_excluded_visualizations.py
+"""
+
 
 class ExcludedVisualizationManager:
     """管理被排除图像的可视化结果"""
@@ -148,7 +152,6 @@ class ExcludedVisualizationManager:
 
         # 2. 查找可视化文件
         visualization_files = self.find_visualization_files(excluded_ids)
-        missing_count = len(excluded_ids) - len(visualization_files)
 
         if not visualization_files:
             print("❌ 未找到任何可视化文件，操作终止")
