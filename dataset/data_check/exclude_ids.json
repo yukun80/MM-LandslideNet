@@ -1082,12 +1082,5 @@
     "ID_EW6QSK",
     "ID_Z05Q86",
     "ID_UF6PLR"
-  ],
-  "statistics": {
-    "threshold_percentile": 15.0,
-    "mean_excluded_rgb_std": 54.87825492019278,
-    "max_excluded_rgb_std": 73.4336575791809,
-    "mean_excluded_contrast": 51.32769797248442,
-    "mean_excluded_brightness": 1663.8610382984216
-  }
+  ]
 }
