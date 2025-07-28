@@ -28,40 +28,39 @@ logger = get_project_logger(__name__)
 
 class ExperimentRunner:
     """
-    实验运行器
+    增强的实验运行器 - 支持K折交叉验证
 
-    与您原来的TaskRunner相比，这个版本更加专注和简化：
-    - 只有一个核心职责：运行实验
-    - 所有的复杂性都封装在配置文件中
-    - 代码逻辑变得极其简洁
+    新增功能：
+    1. 支持kfold任务类型
+    2. 保持现有架构的简洁性
+    3. 委托复杂逻辑给专门的KFoldTrainer
     """
 
-    def __init__(self, config_path: str, task: str = "train"):
+    def __init__(self, config_path: str, task: str = "train", **kwargs):
         """
         初始化实验运行器
 
         Args:
             config_path: 配置文件路径
-            task: 要执行的任务类型（train/predict等）
+            task: 要执行的任务类型（train/predict/kfold）
+            **kwargs: 额外的任务参数
         """
         setup_logging(level=logging.INFO)
         self.config_path = Path(config_path)
         self.task = task
+        self.task_kwargs = kwargs  # 存储额外的任务参数
         self.config = self._load_config()
         self._setup_environment()
 
     def _load_config(self) -> DictConfig:
-        """
-        加载和验证配置文件
-        """
+        """加载和验证配置文件"""
         if not self.config_path.exists():
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
 
-        # 打印路径，加载配置文件
         logger.info(f"Loading config from: {self.config_path}")
         config = OmegaConf.load(self.config_path)
 
-        # 验证配置结构，确保配置文件的结构是正确的
+        # 验证配置结构
         if not validate_config_structure(config):
             raise ValueError("Invalid configuration structure")
 
@@ -69,16 +68,12 @@ class ExperimentRunner:
         return config
 
     def _setup_environment(self):
-        """
-        设置实验环境
-
-        包括日志、随机种子、输出目录等基础设施。
-        """
+        """设置实验环境"""
         # 创建输出目录
         self._create_output_dirs()
+
         # 设置日志，getattr的作用是获取config中的log_level，如果没有则使用INFO
         log_level = getattr(logging, self.config.get("log_level", "INFO").upper())
-
         log_file = None
 
         if "outputs" in self.config and "log_dir" in self.config.outputs:
@@ -99,10 +94,7 @@ class ExperimentRunner:
         self._save_config()
 
     def _create_output_dirs(self):
-        """
-        根据 experiment_name 动态创建实验输出目录。
-        """
-        # 1. 获取基础路径和实验名称
+        """根据experiment_name动态创建实验输出目录"""
         base_dir = Path(self.config.outputs.base_output_dir)
         experiment_path = base_dir / self.config.experiment_name
         logger.info(f"所有实验输出将保存到: {experiment_path}")
@@ -132,15 +124,10 @@ class ExperimentRunner:
         """保存配置文件到实验目录（确保可重现性），如果outputs在config中，则保存config.yaml到outputs.log_dir目录下，
         如果outputs.log_dir不存在，则创建log_dir目录"""
         if "outputs" in self.config and "log_dir" in self.config.outputs:
-            from datetime import datetime
-
             timestamp = datetime.now().strftime(self.config.outputs.get("timestamp_format", "%Y%m%d_%H%M%S"))
             config_save_path = Path(self.config.outputs.log_dir) / f"config_{timestamp}.yaml"
-
-            # parent是log_dir的父目录，如果log_dir不存在，则创建log_dir目录
             config_save_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 保存config.yaml文件
             with open(config_save_path, "w") as f:
                 OmegaConf.save(self.config, f)
 
@@ -148,10 +135,7 @@ class ExperimentRunner:
 
     def run(self) -> Dict[str, Any]:
         """
-        运行实验的主方法
-
-        这是整个框架的核心。它根据任务类型调用相应的执行方法。
-        注意这里的代码有多么简洁 - 所有的复杂性都被配置文件吸收了。
+        运行实验的主方法 - 扩展支持K折交叉验证
 
         Returns:
             实验结果字典
@@ -159,10 +143,12 @@ class ExperimentRunner:
         logger.info(f"🚀 Starting {self.task} task")
         self._print_experiment_info()
 
-        # 根据任务类型分发到不同的执行方法
+        # 扩展的任务方法映射
         task_methods = {
             "train": self._run_training,
             "predict": self._run_prediction,
+            "kfold": self._run_kfold,  # 新增K折任务
+            "kfold_predict": self._run_kfold_predict,  # 新增K折预测任务
         }
 
         if self.task not in task_methods:
@@ -171,37 +157,23 @@ class ExperimentRunner:
         return task_methods[self.task]()
 
     def _run_training(self) -> Dict[str, Any]:
-        """
-        执行训练任务 - 参考latent-diffusion的优雅解决方案
-
-        关键思路：
-        1. 不要修改trainer_config的params
-        2. 在instantiate_from_config(trainer_config)之后再设置callbacks和loggers
-        3. 这样避免了instantiate.py解析复杂对象的问题
-        """
+        """执行标准训练任务"""
         logger.info("Initializing training components...")
 
-        # 创建模型
+        # 创建模型和数据模块
         model = instantiate_from_config(self.config.model)
-        # 创建数据模块
         data_module = instantiate_from_config(self.config.data)
 
-        # 处理trainer配置 - 保持原始配置的纯净性
+        # 处理trainer配置
         trainer_config = self.config.trainer.copy()
-
-        # 单独处理callbacks
         callbacks = self._create_callbacks()
-
-        # 单独处理loggers
         loggers = self._create_loggers()
 
-        # 创建trainer（不包含callbacks和loggers，避免instantiate.py的解析问题）
+        # 创建trainer
         trainer = instantiate_from_config(trainer_config)
 
-        # 在trainer创建完成后，再设置callbacks和loggers
         if callbacks:
             trainer.callbacks = callbacks
-
         if loggers:
             trainer.logger = loggers[0] if len(loggers) == 1 else loggers
 
@@ -247,91 +219,88 @@ class ExperimentRunner:
             "best_checkpoint": self._get_best_checkpoint_path(trainer),
         }
 
-    def _create_callbacks(self) -> List:
+    def _run_kfold(self) -> Dict[str, Any]:
         """
-        创建callbacks - 独立的方法，更清晰的职责分离
-        callbacks的作用：
-        1. 在训练过程中，记录训练日志
-        2. 在训练过程中，保存模型
-        3. 在训练过程中，保存最佳模型
-        4. 在训练过程中，保存验证集上的最佳模型
-        5. 在训练过程中，保存测试集上的最佳模型
-        6. 在训练过程中，保存训练集上的最佳模型
+        执行K折交叉验证任务
+
+        这个方法委托给专门的KFoldTrainer，保持main.py的简洁性
         """
-        callbacks = []
+        logger.info("🎯 Initializing K-Fold Cross Validation...")
 
-        if "callbacks" not in self.config:
-            return callbacks
+        # 检查是否有K折配置
+        if "kfold" not in self.config:
+            raise ValueError("K-fold task requires 'kfold' configuration section")
 
-        # 获取动态生成的路径
-        dynamic_checkpoint_dir = self.config.outputs.get("checkpoint_dir")
-        dynamic_log_dir = self.config.outputs.get("log_dir")
+        # 动态导入KFoldTrainer以避免循环导入
+        try:
+            from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to import KFoldTrainer: {e}\n"
+                "Please ensure the K-fold training module is properly installed."
+            )
 
-        logger.info("-" * 100)
+        # 提取K折配置
+        kfold_config = self.config.kfold
 
-        for callback_name, callback_config in self.config.callbacks.items():
-            # 深拷贝配置，避免修改原始配置
-            effective_config = callback_config.copy()
+        # 应用命令行参数覆盖
+        if "n_splits" in self.task_kwargs:
+            kfold_config.n_splits = self.task_kwargs["n_splits"]
+        if "experiment_name" in self.task_kwargs:
+            kfold_config.experiment_name = self.task_kwargs["experiment_name"]
 
-            # 如果是 ModelCheckpoint 且没有 dirpath，使用动态路径
-            if callback_config.target == "pytorch_lightning.callbacks.ModelCheckpoint" and dynamic_checkpoint_dir:
-                # 直接设置动态路径，覆盖配置文件中的静态路径
-                OmegaConf.update(effective_config, "params.dirpath", dynamic_checkpoint_dir)
+        # 创建KFoldTrainer
+        trainer = KFoldTrainer(
+            model_config=OmegaConf.to_container(self.config.model, resolve=True),
+            data_config=OmegaConf.to_container(self.config.data.params, resolve=True),
+            trainer_config=OmegaConf.to_container(self.config.trainer.params, resolve=True),
+            # K折配置
+            n_splits=kfold_config.get("n_splits", 5),
+            stratified=kfold_config.get("stratified", True),
+            # 输出配置
+            output_dir=kfold_config.get("output_dir", "outputs/kfold_experiments"),
+            experiment_name=kfold_config.get("experiment_name", self.config.get("experiment_name", "kfold_experiment")),
+            # 性能配置
+            primary_metric=kfold_config.get("primary_metric", "f1"),
+            early_stopping_patience=kfold_config.get("early_stopping_patience", 15),
+            # 其他配置
+            seed=self.config.get("seed", 3407),
+            save_predictions=kfold_config.get("save_predictions", True),
+            save_models=kfold_config.get("save_models", True),
+            generate_oof=kfold_config.get("generate_oof", True),
+        )
 
-            if callback_config.target == "lightning_landslide.src.utils.metrics.MetricsLogger" and dynamic_log_dir:
-                OmegaConf.update(effective_config, "params.log_dir", dynamic_log_dir)
+        # 运行K折训练
+        logger.info(f"🔄 Starting {kfold_config.get('n_splits', 5)}-fold cross validation...")
+        results = trainer.train_kfold()
 
-            # 创建callback
-            callback = instantiate_from_config(effective_config)
-            callbacks.append(callback)
-            logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
+        # 打印结果摘要
+        self._print_kfold_summary(results)
 
-        logger.info("-" * 100)
-        return callbacks
+        return results
 
-    def _create_loggers(self) -> List:
+    def _run_kfold_predict(self) -> Dict[str, Any]:
         """
-        创建loggers，并确保它们使用动态生成的路径。
+        执行K折预测任务（从已训练的K折模型生成预测）
         """
-        loggers = []
+        logger.info("🔮 Running K-Fold prediction...")
 
-        if "loggers" not in self.config:
-            return loggers
+        # 检查必需的配置
+        if "resume_from" not in self.task_kwargs:
+            raise ValueError("K-fold prediction requires --resume_from argument")
 
-        # 获取我们动态创建的日志目录
-        dynamic_log_dir = self.config.outputs.get("log_dir")
+        experiment_dir = self.task_kwargs["resume_from"]
+        if not Path(experiment_dir).exists():
+            raise FileNotFoundError(f"Experiment directory not found: {experiment_dir}")
 
-        logger.info("-" * 100)
+        # 导入并使用KFoldTrainer的预测功能
+        from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
 
-        for logger_name, logger_config in self.config.loggers.items():
-            if logger_name == "tensorboard":
-                effective_config = logger_config.copy()
-                OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
-                OmegaConf.update(effective_config, "params.name", "")
-                OmegaConf.update(effective_config, "params.version", "")
-                logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
+        # 这里可以实现从现有模型生成预测的逻辑
+        # 或者调用KFoldTrainer的相关方法
 
-                # 使用更新后的配置来实例化
-                lightning_logger = instantiate_from_config(effective_config)
-                loggers.append(lightning_logger)
-                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
-
-            elif logger_name == "wandb":
-                # WandB配置保持不变
-                lightning_logger = instantiate_from_config(logger_config)
-                loggers.append(lightning_logger)
-                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
-        logger.info("-" * 100)
-        return loggers
-
-    def _get_best_checkpoint_path(self, trainer) -> Optional[str]:
-        """
-        获取最佳检查点路径 - 工具方法
-        """
-        for callback in trainer.callbacks:
-            if isinstance(callback, pl.callbacks.ModelCheckpoint):
-                return getattr(callback, "best_model_path", None)
-        return None
+        logger.info("✅ K-Fold prediction completed")
+        return {"status": "prediction_completed", "experiment_dir": experiment_dir}
 
     def _run_prediction(self) -> Dict[str, Any]:
         """
@@ -389,47 +358,30 @@ class ExperimentRunner:
             "num_samples": len(processed_predictions) if processed_predictions else 0,
         }
 
-    def _save_validation_results(self, val_results: List[Dict]) -> Path:
-        """
-        保存验证结果到文件
+    def _print_kfold_summary(self, results: Dict[str, Any]) -> None:
+        """打印K折结果摘要"""
+        logger.info("\n" + "=" * 60)
+        logger.info("🎉 K-FOLD CROSS VALIDATION COMPLETED!")
+        logger.info("=" * 60)
+        logger.info(f"Experiment: {results['experiment_name']}")
+        logger.info(f"Number of Folds: {results['n_splits']}")
+        logger.info(f"Mean CV Score: {results['mean_cv_score']:.4f} ± {results['std_cv_score']:.4f}")
+        logger.info(f"Training Time: {results['training_time']:.2f}s")
 
-        Args:
-            val_results: Lightning trainer.validate()的返回结果
+        if results.get("oof_metrics"):
+            oof = results["oof_metrics"]
+            logger.info(f"OOF Metrics:")
+            logger.info(f"  F1 Score: {oof.get('f1_score', 0):.4f}")
+            logger.info(f"  AUC Score: {oof.get('auc_score', 0):.4f}")
+            logger.info(f"  Accuracy: {oof.get('accuracy', 0):.4f}")
 
-        Returns:
-            保存的结果文件路径
-        """
-        import json
-        from datetime import datetime
+        # 打印每折结果
+        logger.info("Individual Fold Results:")
+        for i, fold_result in enumerate(results["fold_results"]):
+            score = fold_result["val_metrics"].get("f1", 0)
+            logger.info(f"  Fold {i+1}: {score:.4f}")
 
-        # 创建输出目录
-        output_dir = Path(self.config.outputs.get("predictions_dir", "outputs/validation_results"))
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 生成文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"validation_results_{self.config.experiment_name}_{timestamp}.json"
-        results_file = output_dir / filename
-
-        # 保存结果
-        with open(results_file, "w") as f:
-            json.dump(
-                {
-                    "experiment_name": self.config.experiment_name,
-                    "timestamp": timestamp,
-                    "checkpoint_path": self.config.get("checkpoint_path"),
-                    "validation_results": val_results,
-                    "config_summary": {
-                        "model_type": self.config.model.target.split(".")[-1],
-                        "data_config": self.config.data.target.split(".")[-1],
-                    },
-                },
-                f,
-                indent=2,
-            )
-
-        logger.info(f"Validation results saved to: {results_file}")
-        return results_file
+        logger.info("=" * 60)
 
     def _process_predictions(self, raw_predictions: List) -> List[Dict]:
         """
@@ -531,6 +483,90 @@ class ExperimentRunner:
         logger.info(f"Predictions saved to: {list(output_files.values())}")
         return output_files
 
+    def _create_callbacks(self) -> List:
+        """
+        创建callbacks - 独立的方法，更清晰的职责分离
+        callbacks的作用：
+        1. 在训练过程中，记录训练日志
+        2. 在训练过程中，保存模型
+        3. 在训练过程中，保存最佳模型
+        4. 在训练过程中，保存验证集上的最佳模型
+        5. 在训练过程中，保存测试集上的最佳模型
+        6. 在训练过程中，保存训练集上的最佳模型
+        """
+        callbacks = []
+
+        if "callbacks" not in self.config:
+            return callbacks
+
+        # 获取动态生成的路径
+        dynamic_checkpoint_dir = self.config.outputs.get("checkpoint_dir")
+        dynamic_log_dir = self.config.outputs.get("log_dir")
+
+        logger.info("-" * 100)
+
+        for callback_name, callback_config in self.config.callbacks.items():
+            # 深拷贝配置，避免修改原始配置
+            effective_config = callback_config.copy()
+
+            # 如果是 ModelCheckpoint 且没有 dirpath，使用动态路径
+            if callback_config.target == "pytorch_lightning.callbacks.ModelCheckpoint" and dynamic_checkpoint_dir:
+                # 直接设置动态路径，覆盖配置文件中的静态路径
+                OmegaConf.update(effective_config, "params.dirpath", dynamic_checkpoint_dir)
+
+            if callback_config.target == "lightning_landslide.src.utils.metrics.MetricsLogger" and dynamic_log_dir:
+                OmegaConf.update(effective_config, "params.log_dir", dynamic_log_dir)
+
+            # 创建callback
+            callback = instantiate_from_config(effective_config)
+            callbacks.append(callback)
+            logger.info(f"✓ Added callback: {callback_name} ({type(callback).__name__})")
+
+        logger.info("-" * 100)
+        return callbacks
+
+    def _create_loggers(self) -> List:
+        """
+        创建loggers，并确保它们使用动态生成的路径。
+        """
+        loggers = []
+
+        if "loggers" not in self.config:
+            return loggers
+
+        # 获取我们动态创建的日志目录
+        dynamic_log_dir = self.config.outputs.get("log_dir")
+
+        logger.info("-" * 100)
+
+        for logger_name, logger_config in self.config.loggers.items():
+            if logger_name == "tensorboard":
+                effective_config = logger_config.copy()
+                OmegaConf.update(effective_config, "params.save_dir", dynamic_log_dir)
+                OmegaConf.update(effective_config, "params.name", "")
+                OmegaConf.update(effective_config, "params.version", "")
+                logger.info(f"Logger '{logger_name}' 将使用动态路径: {dynamic_log_dir}")
+
+                # 使用更新后的配置来实例化
+                lightning_logger = instantiate_from_config(effective_config)
+                loggers.append(lightning_logger)
+                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
+
+            elif logger_name == "wandb":
+                # WandB配置保持不变
+                lightning_logger = instantiate_from_config(logger_config)
+                loggers.append(lightning_logger)
+                logger.info(f"✓ Added logger: {logger_name} ({type(lightning_logger).__name__})")
+        logger.info("-" * 100)
+        return loggers
+
+    def _get_best_checkpoint_path(self, trainer) -> Optional[str]:
+        """获取最佳检查点路径"""
+        for callback in trainer.callbacks:
+            if isinstance(callback, pl.callbacks.ModelCheckpoint):
+                return getattr(callback, "best_model_path", None)
+        return None
+
     def _print_experiment_info(self):
         """打印实验信息"""
         print("\n" + "=" * 80)
@@ -553,31 +589,45 @@ def create_parser() -> argparse.ArgumentParser:
         description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,  # 写的格式是什么样就按什么样显示。
         epilog="""
-            Examples:
-            # 训练模型
-            python main.py train lightning_landslide/configs/experiment/optical_baseline.yaml
-            
-            # 运行推理
-            python main.py predict lightning_landslide/configs/experiment/optical_baseline.yaml
-            
-            # 验证模型
-            python main.py validate lightning_landslide/configs/experiment/optical_baseline.yaml
-
-            """,
+Examples:
+  # 标准训练
+  python main.py train configs/experiment/optical_baseline.yaml
+  
+  # K折交叉验证训练  
+  python main.py kfold configs/experiment/optical_baseline_kfold.yaml
+  
+  # K折训练，覆盖折数
+  python main.py kfold configs/experiment/optical_baseline_kfold.yaml --n_splits 10
+  
+  # 标准推理
+  python main.py predict configs/experiment/optical_baseline.yaml
+  
+  # K折预测（从已训练的模型）
+  python main.py kfold_predict configs/experiment/optical_baseline_kfold.yaml --resume_from outputs/kfold_experiments/my_experiment
+  
+  # 验证模型
+  python main.py validate configs/experiment/optical_baseline.yaml
+        """,
     )
 
     # 主要参数
     parser.add_argument(
         "task",
-        choices=["train", "predict", "validate"],
+        choices=["train", "predict", "kfold", "kfold_predict"],
         help="Task to execute",
     )
 
-    parser.add_argument(
-        "config",
-        type=str,
-        help="Path to configuration file",
-    )
+    parser.add_argument("config", type=str, help="Path to configuration file")
+
+    # K折特定参数
+    parser.add_argument("--n_splits", type=int, help="Number of folds for K-fold CV (overrides config)")
+
+    parser.add_argument("--experiment_name", type=str, help="Override experiment name")
+
+    parser.add_argument("--resume_from", type=str, help="Resume from existing experiment directory (for kfold_predict)")
+
+    # 调试参数
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     return parser
 
@@ -598,16 +648,31 @@ def main():
     parser = create_parser()  # 创建命令行参数解析器
     args = parser.parse_args()  # 解析命令行参数
 
+    # 准备任务参数
+    task_kwargs = {}
+    if args.n_splits is not None:
+        task_kwargs["n_splits"] = args.n_splits
+    if args.experiment_name is not None:
+        task_kwargs["experiment_name"] = args.experiment_name
+    if args.resume_from is not None:
+        task_kwargs["resume_from"] = args.resume_from
+    if args.debug:
+        task_kwargs["debug"] = True
+
     # 创建实验运行器
-    runner = ExperimentRunner(args.config, args.task)
+    runner = ExperimentRunner(args.config, args.task, **task_kwargs)
 
     # 运行实验
     results = runner.run()
 
     # 报告结果
     print(f"\n🎉 Task '{args.task}' completed successfully!")
-    if results.get("best_model_path"):
-        print(f"📁 Best model saved to: {results['best_model_path']}")
+
+    if args.task == "kfold":
+        if "mean_cv_score" in results:
+            print(f"📈 Mean CV Score: {results['mean_cv_score']:.4f} ± {results['std_cv_score']:.4f}")
+    elif results.get("best_checkpoint"):
+        print(f"📁 Best model saved to: {results['best_checkpoint']}")
 
 
 if __name__ == "__main__":

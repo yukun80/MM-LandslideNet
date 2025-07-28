@@ -25,7 +25,6 @@ import json
 from copy import deepcopy
 
 from .multimodal_dataset import create_train_dataset, create_test_dataset
-from .base import BaseDataModule
 
 logger = logging.getLogger(__name__)
 
