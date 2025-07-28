@@ -7,7 +7,7 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "optical_swin_tiny_0724"
+experiment_name: "optical_swin_tiny_0728_5-fold"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
 version: "1.0.0"
 tags: ["optical", "baseline", "swin", "binary_classification"]

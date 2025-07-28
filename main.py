@@ -22,6 +22,7 @@ from omegaconf import DictConfig, OmegaConf
 # 导入我们的核心工具
 from lightning_landslide.src.utils.instantiate import instantiate_from_config, validate_config_structure
 from lightning_landslide.src.utils.logging_utils import setup_logging, get_project_logger
+from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
 
 logger = get_project_logger(__name__)
 
@@ -231,15 +232,6 @@ class ExperimentRunner:
         if "kfold" not in self.config:
             raise ValueError("K-fold task requires 'kfold' configuration section")
 
-        # 动态导入KFoldTrainer以避免循环导入
-        try:
-            from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
-        except ImportError as e:
-            raise ImportError(
-                f"Failed to import KFoldTrainer: {e}\n"
-                "Please ensure the K-fold training module is properly installed."
-            )
-
         # 提取K折配置
         kfold_config = self.config.kfold
 
@@ -292,9 +284,6 @@ class ExperimentRunner:
         experiment_dir = self.task_kwargs["resume_from"]
         if not Path(experiment_dir).exists():
             raise FileNotFoundError(f"Experiment directory not found: {experiment_dir}")
-
-        # 导入并使用KFoldTrainer的预测功能
-        from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
 
         # 这里可以实现从现有模型生成预测的逻辑
         # 或者调用KFoldTrainer的相关方法
@@ -591,22 +580,22 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # 标准训练
-  python main.py train configs/experiment/optical_baseline.yaml
+  python main.py train configs/optical_baseline.yaml
   
   # K折交叉验证训练  
-  python main.py kfold configs/experiment/optical_baseline_kfold.yaml
+  python main.py kfold configs/optical_baseline_kfold.yaml
   
   # K折训练，覆盖折数
-  python main.py kfold configs/experiment/optical_baseline_kfold.yaml --n_splits 10
+  python main.py kfold configs/optical_baseline_kfold.yaml --n_splits 10
   
   # 标准推理
-  python main.py predict configs/experiment/optical_baseline.yaml
+  python main.py predict configs/optical_baseline.yaml
   
   # K折预测（从已训练的模型）
-  python main.py kfold_predict configs/experiment/optical_baseline_kfold.yaml --resume_from outputs/kfold_experiments/my_experiment
+  python main.py kfold_predict configs/optical_baseline_kfold.yaml --resume_from outputs/kfold_experiments/my_experiment
   
   # 验证模型
-  python main.py validate configs/experiment/optical_baseline.yaml
+  python main.py validate configs/optical_baseline.yaml
         """,
     )
 
