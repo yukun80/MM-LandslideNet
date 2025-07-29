@@ -264,9 +264,6 @@ class SimpleKFoldTrainer:
             save_last = checkpoint_config.get("save_last", True)
             verbose = checkpoint_config.get("verbose", True)
 
-            # 关键修复：正确读取min_delta参数
-            min_delta = checkpoint_config.get("min_delta", 0.0)  # 默认值应该和Lightning一致
-
             checkpoint_callback = ModelCheckpoint(
                 dirpath=str(self.output_dir / "models"),
                 filename=f"fold_{fold_idx}_best_{{epoch:02d}}_{{val_{self.primary_metric}:.4f}}",
@@ -275,7 +272,6 @@ class SimpleKFoldTrainer:
                 save_top_k=save_top_k,
                 save_last=save_last,
                 verbose=verbose,
-                min_delta=min_delta,  # 使用配置文件中的值
             )
             callbacks.append(checkpoint_callback)
 
