@@ -114,7 +114,7 @@ data:
     active_mode: "optical_only"
     
     # 数据加载配置
-    batch_size: 16
+    batch_size: 32
     num_workers: 8
     pin_memory: true
     
@@ -223,6 +223,13 @@ callbacks:
     params:
       summary_interval: 5  # 每5个epoch打印详细总结
       save_history: true   # 保存完整历史
+
+kfold:
+  n_splits: 5                    # 折数
+  stratified: true               # 是否分层抽样
+  primary_metric: "f1"           # 主要评估指标
+  save_oof_predictions: true     # 是否保存OOF（Out-of-Fold）预测
+  save_fold_models: true         # 是否保存每折的模型
 
 # === 日志记录器配置 ===
 # 定义实验追踪和可视化方式

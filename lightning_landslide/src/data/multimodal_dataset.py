@@ -140,7 +140,7 @@ class MultiModalDataset(Dataset):
 
         exclude_set = set(exclude_ids.get("excluded_image_ids", []))
 
-        logger.info(f"😡🔢 Loaded {len(exclude_set)} samples to exclude")
+        logger.info(f"👮🔢 Loaded {len(exclude_set)} samples to exclude")
         return exclude_set
 
     def _filter_data(self) -> None:
@@ -159,8 +159,8 @@ class MultiModalDataset(Dataset):
         self.data_index = self.data_index[mask].reset_index(drop=True)
 
         filtered_count = initial_count - len(self.data_index)
-        logger.info(f"😡🔢 Filtered out {filtered_count} low-quality samples")
-        logger.info(f"😡🔢 Remaining samples: {len(self.data_index)}")
+        logger.info(f"👮🔢 Filtered out {filtered_count} low-quality samples")
+        logger.info(f"👮🔢 Remaining samples: {len(self.data_index)}")
 
     def __len__(self) -> int:
         """返回数据集大小"""

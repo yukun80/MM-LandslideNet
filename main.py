@@ -22,7 +22,7 @@ from omegaconf import DictConfig, OmegaConf
 # 导入我们的核心工具
 from lightning_landslide.src.utils.instantiate import instantiate_from_config, validate_config_structure
 from lightning_landslide.src.utils.logging_utils import setup_logging, get_project_logger
-from lightning_landslide.src.training.kfold_trainer import KFoldTrainer
+from lightning_landslide.src.training.simple_kfold_trainer import SimpleKFoldTrainer
 
 logger = get_project_logger(__name__)
 
@@ -149,7 +149,6 @@ class ExperimentRunner:
             "train": self._run_training,
             "predict": self._run_prediction,
             "kfold": self._run_kfold,  # 新增K折任务
-            "kfold_predict": self._run_kfold_predict,  # 新增K折预测任务
         }
 
         if self.task not in task_methods:
@@ -222,74 +221,122 @@ class ExperimentRunner:
 
     def _run_kfold(self) -> Dict[str, Any]:
         """
-        执行K折交叉验证任务
+        执行K折交叉验证任务 - 重构版本
 
-        这个方法委托给专门的KFoldTrainer，保持main.py的简洁性
+        我们不再需要复杂的配置解析和参数传递，
+        而是直接将完整配置传递给专门的K折训练器。
+
+        就像把整个菜谱交给专业厨师，而不是逐个解释每个步骤。
         """
         logger.info("🎯 Initializing K-Fold Cross Validation...")
 
-        # 检查是否有K折配置
-        if "kfold" not in self.config:
-            raise ValueError("K-fold task requires 'kfold' configuration section")
+        # 验证配置完整性
+        self._validate_kfold_config()
 
-        # 提取K折配置
-        kfold_config = self.config.kfold
+        # 获取实验输出路径 - 与基础训练完全一致的逻辑
+        experiment_output_dir = self._get_experiment_output_dir()
 
-        # 应用命令行参数覆盖
-        if "n_splits" in self.task_kwargs:
-            kfold_config.n_splits = self.task_kwargs["n_splits"]
-        if "experiment_name" in self.task_kwargs:
-            kfold_config.experiment_name = self.task_kwargs["experiment_name"]
+        logger.info(f"📁 K-fold experiment will be saved to: {experiment_output_dir}")
 
-        # 创建KFoldTrainer
-        trainer = KFoldTrainer(
-            model_config=OmegaConf.to_container(self.config.model, resolve=True),
-            data_config=OmegaConf.to_container(self.config.data.params, resolve=True),
-            trainer_config=OmegaConf.to_container(self.config.trainer.params, resolve=True),
-            # K折配置
-            n_splits=kfold_config.get("n_splits", 5),
-            stratified=kfold_config.get("stratified", True),
-            # 输出配置
-            output_dir=kfold_config.get("output_dir", "outputs/kfold_experiments"),
-            experiment_name=kfold_config.get("experiment_name", self.config.get("experiment_name", "kfold_experiment")),
-            # 性能配置
-            primary_metric=kfold_config.get("primary_metric", "f1"),
-            early_stopping_patience=kfold_config.get("early_stopping_patience", 15),
-            # 其他配置
-            seed=self.config.get("seed", 3407),
-            save_predictions=kfold_config.get("save_predictions", True),
-            save_models=kfold_config.get("save_models", True),
-            generate_oof=kfold_config.get("generate_oof", True),
+        # 创建并运行K折训练器
+        kfold_trainer = SimpleKFoldTrainer(
+            config=self.config,
+            experiment_name=self.config.get("experiment_name", "kfold_experiment"),
+            output_dir=str(experiment_output_dir),  # 使用与基础训练一致的路径
         )
 
-        # 运行K折训练
-        logger.info(f"🔄 Starting {kfold_config.get('n_splits', 5)}-fold cross validation...")
-        results = trainer.train_kfold()
+        # 执行K折训练
+        results = kfold_trainer.run_kfold_training()
 
         # 打印结果摘要
         self._print_kfold_summary(results)
 
         return results
 
-    def _run_kfold_predict(self) -> Dict[str, Any]:
+    def _get_experiment_output_dir(self) -> Path:
         """
-        执行K折预测任务（从已训练的K折模型生成预测）
+        获取实验输出目录 - 与基础训练保持完全一致
+
+        这个方法复用了基础训练中_create_output_dirs()的核心逻辑，
+        确保k-fold训练的输出路径与标准训练完全一致。
+
+        设计思想：
+        就像工厂中的标准化生产流程，无论生产什么产品，
+        都遵循相同的质量标准和工序规范。
+
+        Returns:
+            实验输出目录的完整路径
         """
-        logger.info("🔮 Running K-Fold prediction...")
+        # 1. 获取基础输出目录 - 与基础训练相同的逻辑
+        base_dir = Path(self.config.outputs.base_output_dir)
 
-        # 检查必需的配置
-        if "resume_from" not in self.task_kwargs:
-            raise ValueError("K-fold prediction requires --resume_from argument")
+        # 2. 使用实验名称构建完整路径 - 与基础训练相同的逻辑
+        experiment_path = base_dir / self.config.experiment_name
 
-        experiment_dir = self.task_kwargs["resume_from"]
-        if not Path(experiment_dir).exists():
-            raise FileNotFoundError(f"Experiment directory not found: {experiment_dir}")
+        # 3. 确保目录存在
+        experiment_path.mkdir(parents=True, exist_ok=True)
 
-        # 这里可以实现从现有模型生成预测的逻辑
-        # 或者调用KFoldTrainer的相关方法
+        logger.debug(f"📂 Experiment output directory: {experiment_path}")
 
-        logger.info("✅ K-Fold prediction completed")
-        return {"status": "prediction_completed", "experiment_dir": experiment_dir}
+        return experiment_path
+
+    def _validate_kfold_config(self):
+        """
+        验证K折配置的完整性
+
+        这个方法确保用户提供的配置包含所有必需的部分。
+        就像检查菜谱是否包含所有必需的材料和步骤。
+        """
+        required_sections = ["model", "data", "trainer"]
+        missing_sections = []
+
+        for section in required_sections:
+            if section not in self.config:
+                missing_sections.append(section)
+
+        if missing_sections:
+            raise ValueError(
+                f"K-fold training requires the following config sections: {missing_sections}. "
+                f"Please ensure your config file includes all required sections."
+            )
+
+        # 如果没有kfold配置，我们添加默认配置
+        if "kfold" not in self.config:
+            logger.info("🔧 No 'kfold' section found in config, using defaults")
+            self.config["kfold"] = {
+                "n_splits": 5,
+                "stratified": True,
+                "primary_metric": "f1",
+                "save_oof_predictions": True,
+                "save_fold_models": True,
+            }
+
+        logger.info("✅ K-fold configuration validated")
+
+    def _print_kfold_summary(self, results: Dict[str, Any]):
+        """
+        打印K折训练结果摘要
+
+        这个方法为用户提供清晰、易读的结果摘要。
+        就像为一场音乐会制作节目单，突出最重要的信息。
+        """
+        print("\n" + "=" * 80)
+        print("🎉 K-FOLD CROSS VALIDATION COMPLETED")
+        print("=" * 80)
+
+        print(f"📊 Experiment: {results['experiment_name']}")
+        print(f"🎯 {results['n_splits']}-Fold Cross Validation")
+        print(f"⏱️  Total Time: {results['total_time']:.2f}s")
+        print(
+            f"📈 Primary Metric ({results['primary_metric']}): {results['mean_cv_score']:.4f} ± {results['std_cv_score']:.4f}"
+        )
+
+        print(f"\n📋 Individual Fold Results:")
+        for i, score in enumerate(results["cv_scores"]):
+            print(f"   Fold {i+1}: {score:.4f}")
+
+        print(f"\n📁 Results saved to: outputs/kfold_experiments/{results['experiment_name']}")
+        print("=" * 80 + "\n")
 
     def _run_prediction(self) -> Dict[str, Any]:
         """
@@ -346,31 +393,6 @@ class ExperimentRunner:
             "checkpoint_used": checkpoint_path,
             "num_samples": len(processed_predictions) if processed_predictions else 0,
         }
-
-    def _print_kfold_summary(self, results: Dict[str, Any]) -> None:
-        """打印K折结果摘要"""
-        logger.info("\n" + "=" * 60)
-        logger.info("🎉 K-FOLD CROSS VALIDATION COMPLETED!")
-        logger.info("=" * 60)
-        logger.info(f"Experiment: {results['experiment_name']}")
-        logger.info(f"Number of Folds: {results['n_splits']}")
-        logger.info(f"Mean CV Score: {results['mean_cv_score']:.4f} ± {results['std_cv_score']:.4f}")
-        logger.info(f"Training Time: {results['training_time']:.2f}s")
-
-        if results.get("oof_metrics"):
-            oof = results["oof_metrics"]
-            logger.info(f"OOF Metrics:")
-            logger.info(f"  F1 Score: {oof.get('f1_score', 0):.4f}")
-            logger.info(f"  AUC Score: {oof.get('auc_score', 0):.4f}")
-            logger.info(f"  Accuracy: {oof.get('accuracy', 0):.4f}")
-
-        # 打印每折结果
-        logger.info("Individual Fold Results:")
-        for i, fold_result in enumerate(results["fold_results"]):
-            score = fold_result["val_metrics"].get("f1", 0)
-            logger.info(f"  Fold {i+1}: {score:.4f}")
-
-        logger.info("=" * 60)
 
     def _process_predictions(self, raw_predictions: List) -> List[Dict]:
         """
@@ -576,33 +598,26 @@ class ExperimentRunner:
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MM-LandslideNet: Configuration-Driven Deep Learning Framework",
-        formatter_class=argparse.RawDescriptionHelpFormatter,  # 写的格式是什么样就按什么样显示。
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # 标准训练
   python main.py train configs/optical_baseline.yaml
   
   # K折交叉验证训练  
-  python main.py kfold configs/optical_baseline_kfold.yaml
+  python main.py kfold lightning_landslide/configs/optical_baseline_5-fold.yaml
   
   # K折训练，覆盖折数
   python main.py kfold configs/optical_baseline_kfold.yaml --n_splits 10
   
-  # 标准推理
-  python main.py predict configs/optical_baseline.yaml
-  
-  # K折预测（从已训练的模型）
-  python main.py kfold_predict configs/optical_baseline_kfold.yaml --resume_from outputs/kfold_experiments/my_experiment
-  
-  # 验证模型
-  python main.py validate configs/optical_baseline.yaml
+  # K折训练，自定义实验名称
+  python main.py kfold configs/optical_baseline_kfold.yaml --experiment_name my_kfold_experiment
         """,
     )
 
-    # 主要参数
     parser.add_argument(
         "task",
-        choices=["train", "predict", "kfold", "kfold_predict"],
+        choices=["train", "predict", "kfold"],  # 简化任务选择，移除复杂的kfold_predict
         help="Task to execute",
     )
 
@@ -610,13 +625,7 @@ Examples:
 
     # K折特定参数
     parser.add_argument("--n_splits", type=int, help="Number of folds for K-fold CV (overrides config)")
-
     parser.add_argument("--experiment_name", type=str, help="Override experiment name")
-
-    parser.add_argument("--resume_from", type=str, help="Resume from existing experiment directory (for kfold_predict)")
-
-    # 调试参数
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     return parser
 
@@ -637,19 +646,8 @@ def main():
     parser = create_parser()  # 创建命令行参数解析器
     args = parser.parse_args()  # 解析命令行参数
 
-    # 准备任务参数
-    task_kwargs = {}
-    if args.n_splits is not None:
-        task_kwargs["n_splits"] = args.n_splits
-    if args.experiment_name is not None:
-        task_kwargs["experiment_name"] = args.experiment_name
-    if args.resume_from is not None:
-        task_kwargs["resume_from"] = args.resume_from
-    if args.debug:
-        task_kwargs["debug"] = True
-
     # 创建实验运行器
-    runner = ExperimentRunner(args.config, args.task, **task_kwargs)
+    runner = ExperimentRunner(args.config, args.task)
 
     # 运行实验
     results = runner.run()
