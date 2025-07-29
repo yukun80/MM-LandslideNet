@@ -286,7 +286,7 @@ class SimpleKFoldTrainer:
             verbose = early_stop_config.get("verbose", True)
 
             # 关键修复：同样需要读取min_delta参数
-            min_delta = early_stop_config.get("min_delta", 0.0)
+            min_delta = early_stop_config.get("min_delta", 0.001)
 
             early_stopping = EarlyStopping(
                 monitor=monitor_metric,

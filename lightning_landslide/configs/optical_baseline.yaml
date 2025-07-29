@@ -253,7 +253,6 @@ outputs:
   checkpoint_subdir: "checkpoints"
   log_subdir: "log"
   predictions_subdir: "predictions"
-  figures_subdir: "figures"
 
   # result_prefix: "optical_swin_tiny_baseline"
   # timestamp_format: "%Y%m%d_%H%M%S"
