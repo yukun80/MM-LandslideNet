@@ -92,8 +92,8 @@ data:
     
     # 数据加载配置 - 与baseline保持一致
     batch_size: 32
-    num_workers: 8
-    pin_memory: true
+    num_workers: 0
+    pin_memory: false
     
     # 数据分割 - 与baseline保持一致
     val_split: 0.2
