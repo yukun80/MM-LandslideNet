@@ -50,69 +50,6 @@ except ImportError as e:
     logger.error(f"Failed to import uncertainty estimation components: {e}")
     raise
 
-try:
-    from .pseudo_label_generator import (
-        PseudoLabelGenerator,
-        PseudoLabelSample,
-        PseudoLabelResults,
-        AdaptiveThresholdScheduler,
-        ClassBalanceController,
-        create_pseudo_label_generator,
-    )
-
-    logger.debug("✓ Pseudo labeling components loaded")
-except ImportError as e:
-    logger.error(f"Failed to import pseudo labeling components: {e}")
-    raise
-
-try:
-    from .active_learning_selector import (
-        BaseActiveLearningStrategy,
-        UncertaintyStrategy,
-        DiversityStrategy,
-        ClusterBasedStrategy,
-        QueryByCommitteeStrategy,
-        HybridActiveLearningSelector,
-        ActiveLearningQuery,
-        ActiveLearningResults,
-        create_active_learning_selector,
-    )
-
-    logger.debug("✓ Active learning selection components loaded")
-except ImportError as e:
-    logger.error(f"Failed to import active learning selection components: {e}")
-    raise
-
-try:
-    from .active_pseudo_trainer import (
-        ActivePseudoTrainer,
-        ActivePseudoTrainingResults,
-        IterationResults,
-        create_active_pseudo_trainer,
-    )
-
-    logger.debug("✓ Active pseudo training components loaded")
-except ImportError as e:
-    logger.error(f"Failed to import active pseudo training components: {e}")
-    raise
-
-try:
-    from .data_management import (
-        EnhancedDataManager,
-        DataSample,
-        DatasetVersion,
-        CombinedDataset,
-        BaseAnnotationInterface,
-        SimulatedAnnotationInterface,
-        WebAnnotationInterface,
-        create_annotation_interface,
-        create_enhanced_data_manager,
-    )
-
-    logger.debug("✓ Data management components loaded")
-except ImportError as e:
-    logger.error(f"Failed to import data management components: {e}")
-    raise
 
 try:
     from .visualization import ActiveLearningVisualizer, VisualizationConfig, create_visualizer
@@ -192,36 +129,6 @@ class ActiveLearningError(Exception):
     """主动学习模块的基础异常类"""
 
     pass
-
-
-def create_active_learning_pipeline(
-    config: Dict[str, Any], experiment_name: str = None, output_dir: str = None, enable_kfold: bool = False
-) -> Any:
-    """
-    便捷函数：创建完整的主动学习流水线
-
-    Args:
-        config: 完整配置字典
-        experiment_name: 实验名称
-        output_dir: 输出目录
-        enable_kfold: 是否启用K折交叉验证
-
-    Returns:
-        训练器实例
-
-    Raises:
-        ActiveLearningError: 配置错误或组件创建失败
-    """
-    try:
-        if enable_kfold and ActiveKFoldTrainer is not None:
-            logger.info("🔄 Creating Active K-fold training pipeline")
-            return create_active_kfold_trainer(config=config, experiment_name=experiment_name, output_dir=output_dir)
-        else:
-            logger.info("🎯 Creating Active pseudo-label training pipeline")
-            return create_active_pseudo_trainer(config=config, experiment_name=experiment_name, output_dir=output_dir)
-
-    except Exception as e:
-        raise ActiveLearningError(f"Failed to create active learning pipeline: {e}") from e
 
 
 def validate_active_learning_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -360,76 +267,6 @@ def get_active_learning_info() -> Dict[str, Any]:
 
 
 # 模块级别的便捷函数
-def quick_start_active_learning(
-    train_data_dir: str,
-    test_data_dir: str,
-    train_csv: str,
-    test_csv: str,
-    model_name: str = "swin_tiny_patch4_window7_224",
-    experiment_name: str = None,
-    max_iterations: int = 5,
-) -> Dict[str, Any]:
-    """
-    快速启动主动学习的便捷函数
-
-    Args:
-        train_data_dir: 训练数据目录
-        test_data_dir: 测试数据目录
-        train_csv: 训练标签文件
-        test_csv: 测试标签文件
-        model_name: 模型名称
-        experiment_name: 实验名称
-        max_iterations: 最大迭代次数
-
-    Returns:
-        训练结果字典
-    """
-    logger.info("🚀 Quick start active learning...")
-
-    # 创建默认配置
-    config = {
-        "experiment_name": experiment_name or f"quick_active_{int(__import__('time').time())}",
-        "seed": 3407,
-        "log_level": "INFO",
-        "model": {
-            "target": "lightning_landslide.src.models.LandslideClassificationModule",
-            "params": {
-                "base_model": {
-                    "target": "lightning_landslide.src.models.optical_swin.OpticalSwinModel",
-                    "params": {"model_name": model_name, "input_channels": 5, "num_classes": 1},
-                }
-            },
-        },
-        "data": {
-            "target": "lightning_landslide.src.data.MultiModalDataModule",
-            "params": {
-                "train_data_dir": train_data_dir,
-                "test_data_dir": test_data_dir,
-                "train_csv": train_csv,
-                "test_csv": test_csv,
-                "batch_size": 32,
-                "num_workers": 4,
-            },
-        },
-        "trainer": {
-            "target": "pytorch_lightning.Trainer",
-            "params": {"max_epochs": 30, "accelerator": "auto", "devices": "auto"},
-        },
-        "active_pseudo_learning": {"max_iterations": max_iterations, "annotation_budget": 50},
-        "outputs": {"base_output_dir": "outputs"},
-    }
-
-    # 验证配置
-    config = validate_active_learning_config(config)
-
-    # 创建训练器
-    trainer = create_active_learning_pipeline(config)
-
-    # 运行训练
-    results = trainer.run()
-
-    logger.info("✅ Quick start active learning completed")
-    return results.to_dict() if hasattr(results, "to_dict") else results
 
 
 # 错误处理装饰器
@@ -450,36 +287,8 @@ def handle_active_learning_errors(func):
     return wrapper
 
 
-# 模块初始化时的检查
-def _check_dependencies():
-    """检查必要的依赖"""
-    try:
-        import torch
-        import pytorch_lightning as pl
-        import numpy as np
-        import pandas as pd
-        import sklearn
-        import matplotlib
-        import seaborn as sns
-
-        logger.debug("✓ All required dependencies available")
-    except ImportError as e:
-        logger.error(f"Missing required dependency: {e}")
-        raise ImportError(f"Missing required dependency for active learning module: {e}")
-
-
 def _suppress_warnings():
     """抑制不必要的警告"""
     warnings.filterwarnings("ignore", category=UserWarning, module="pytorch_lightning")
     warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
     warnings.filterwarnings("ignore", category=RuntimeWarning, module="matplotlib")
-
-
-# 模块初始化
-try:
-    _check_dependencies()
-    _suppress_warnings()
-    logger.info(f"🎯 MM-LandslideNet Active Learning Module v{__version__} loaded successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize active learning module: {e}")
-    raise

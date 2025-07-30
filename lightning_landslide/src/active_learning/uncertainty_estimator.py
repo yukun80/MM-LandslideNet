@@ -115,32 +115,32 @@ class MCDropoutEstimator(BaseUncertaintyEstimator):
         """使用MC Dropout估计不确定性"""
         logger.info(f"🎲 Running MC Dropout with {self.n_forward_passes} forward passes...")
 
+        # === 关键修复：确保模型在正确设备上 ===
+        model = model.to(self.device)
         model.eval()
-        self._enable_dropout(model)  # 关键：推理时保持dropout开启
+        self._enable_dropout(model)
 
         all_predictions = []
         all_sample_ids = []
 
         with torch.no_grad():
             for batch_idx, (data, labels) in enumerate(dataloader):
+                # === 关键修复：确保数据在正确设备上 ===
                 data = data.to(self.device)
                 sample_ids = [f"sample_{batch_idx}_{i}" for i in range(len(data))]
 
-                # 多次前向传播
                 batch_predictions = []
                 for _ in range(self.n_forward_passes):
-                    with torch.no_grad():
-                        logits = model(data)
+                    logits = model(data)
 
-                        # 应用温度缩放（如果启用）
-                        if self.use_temperature_scaling and self.temperature_scaler is not None:
-                            probs = self.temperature_scaler.calibrate(logits)
-                        else:
-                            probs = F.softmax(logits, dim=1)
+                    if self.use_temperature_scaling and self.temperature_scaler is not None:
+                        probs = self.temperature_scaler.calibrate(logits)
+                    else:
+                        probs = F.softmax(logits, dim=1)
 
-                        batch_predictions.append(probs.cpu().numpy())
+                    batch_predictions.append(probs.cpu().numpy())
 
-                batch_predictions = np.stack(batch_predictions, axis=0)  # (n_passes, batch_size, num_classes)
+                batch_predictions = np.stack(batch_predictions, axis=0)
                 all_predictions.append(batch_predictions)
                 all_sample_ids.extend(sample_ids)
 

@@ -1,0 +1,299 @@
+# =============================================================================
+# optical_baseline_human_guided.yaml - 人工指导主动学习配置
+# =============================================================================
+
+# 实验信息
+experiment_name: "human_guided_active_learning_v1"
+description: "Human-guided active learning with real expert annotations"
+version: "1.0.0"
+tags: ["optical", "active_learning", "human_guided"]
+
+# 全局设置
+seed: 3407
+log_level: "INFO"
+
+# 模型配置 (保持不变)
+model:
+  target: lightning_landslide.src.models.LandslideClassificationModule
+  params:
+    base_model:
+      target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
+      params:
+        model_name: "swinv2_tiny_window16_256"
+        input_channels: 5
+        pretrained: true
+        dropout_rate: 0.2
+        img_size: 256
+    
+    classifier_config:
+      type: "simple"
+    
+    loss_config:
+      type: "focal"
+      focal_params: {alpha: 0.25, gamma: 2.0}
+    
+    optimizer_config:
+      type: "adamw"
+      adamw_params: {lr: 4e-5, weight_decay: 1e-2}
+      differential_lr: {enable: true, backbone_lr_ratio: 0.1, classifier_lr_ratio: 1.0}
+    
+    scheduler_config:
+      type: "cosine_with_warmup"
+      cosine_params: {T_0: 15, T_mult: 1, eta_min: 1e-7}
+    
+    metrics_config:
+      primary_metric: "f1"
+      metrics: ["accuracy", "precision", "recall", "f1", "auroc"]
+      threshold: 0.5
+
+# 数据配置
+data:
+  target: lightning_landslide.src.data.MultiModalDataModule
+  params:
+    # 数据路径
+    train_data_dir: "dataset/train_data"
+    test_data_dir: "dataset/test_data"
+    train_csv: "dataset/Train.csv"
+    test_csv: "dataset/Test.csv"
+    exclude_ids_file: "dataset/data_check/exclude_ids.json"
+
+    # 通道配置
+    channel_config:
+      channel_groups:
+        optical: [0, 1, 2, 3]
+        derived: ["ndvi"]
+      usage_modes:
+        optical_only:
+          groups: ["optical", "derived"]
+    
+    active_mode: "optical_only"
+    batch_size: 32
+    num_workers: 8
+    pin_memory: true
+    val_split: 0.2
+    stratify: true
+    shuffle_train: true
+
+    # 预处理配置
+    preprocessing:
+      normalization:
+        means: [1849.282, 1953.906, 1896.493, 3291.47, -9.624, -17.110, 
+                -0.699, -0.483, -10.671, -18.442, 0.248, -0.234]
+        stds: [1414.462, 1338.292, 1342.528, 1448.362, 7.904, 9.245, 
+              4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
+      ndvi_computation:
+        red_channel_idx: 0
+        nir_channel_idx: 3
+
+    # 数据增强配置
+    augmentation:
+      train: {resize: 256, random_flip: true, h_flip_prob: 0.5, v_flip_prob: 0.5}
+      val: {resize: 256}
+      test: {resize: 256}
+
+# === 人工指导主动学习配置 ===
+active_pseudo_learning:
+  max_iterations: 5                     # 主动学习迭代次数
+  annotation_budget: 20                 # 每轮人工标注样本数 (建议从少开始)
+  
+  # 标注模式配置
+  annotation_mode: "human"              # "human" | "simulated"
+  annotation_timeout: 1800              # 标注超时时间 (30分钟)
+  
+  # 不确定性估计配置
+  uncertainty_estimation:
+    method: "mc_dropout"
+    params:
+      n_forward_passes: 10              # MC Dropout前向传播次数
+  
+  # 伪标签生成配置
+  pseudo_labeling:
+    confidence_threshold: 0.85          # 伪标签置信度阈值
+  
+  # 人工标注质量控制
+  annotation_quality:
+    min_confidence: 0.7                 # 最低接受的标注置信度
+    require_confidence: false           # 是否要求专家提供置信度
+    save_annotation_history: true      # 保存标注历史
+
+# === 训练器配置 ===
+trainer:
+  target: pytorch_lightning.Trainer
+  params:
+    max_epochs: 20                  # 每轮训练的最大epoch数
+    accelerator: "gpu"
+    devices: 1
+    precision: "32-true"            # 保持稳定性，避免精度问题
+    
+    # 进度和日志配置
+    enable_progress_bar: true
+    log_every_n_steps: 10
+    val_check_interval: 1.0
+    check_val_every_n_epoch: 1
+    
+    # 训练配置
+    gradient_clip_val: 1.0
+    accumulate_grad_batches: 1
+    enable_model_summary: true
+    deterministic: false
+    
+    # 性能优化
+    benchmark: false
+    detect_anomaly: false
+
+# === 回调函数配置 ===
+callbacks:
+  model_checkpoint:
+    target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      filename: "best-{epoch:02d}-{val_f1:.4f}"
+      monitor: "val_f1"
+      mode: "max"
+      save_top_k: 1
+      save_last: true
+      verbose: true
+      save_weights_only: false
+      auto_insert_metric_name: false
+  
+  early_stopping:
+    target: pytorch_lightning.callbacks.EarlyStopping
+    params:
+      monitor: "val_f1"
+      mode: "max"
+      patience: 15                # 人工标注模式下适当增加耐心值
+      verbose: true
+      strict: false
+      min_delta: 0.001
+      check_finite: true
+  
+  lr_monitor:
+    target: pytorch_lightning.callbacks.LearningRateMonitor
+    params:
+      logging_interval: "epoch"
+      log_momentum: false
+      log_weight_decay: false
+
+# === 日志记录器配置 ===
+loggers:
+  tensorboard:
+    target: pytorch_lightning.loggers.TensorBoardLogger
+    params:
+      save_dir: ""              # 将由程序自动设置
+      name: ""                  # 将由程序自动设置
+      version: ""               # 将由程序自动设置
+      log_graph: false          # 避免图结构日志的复杂性
+      default_hp_metric: true
+      prefix: ""
+      sub_dir: null
+      agg_key_funcs: null
+      agg_default_func: null
+
+# === 输出目录配置 ===
+outputs:
+  base_output_dir: "lightning_landslide/exp"
+  checkpoint_subdir: "checkpoints"
+  log_subdir: "log"
+  predictions_subdir: "predictions"
+  human_annotations_subdir: "human_annotations"    # 人工标注专用目录
+  visualization_subdir: "visualizations"           # 可视化结果目录
+  reports_subdir: "reports"                        # 报告目录
+
+# === 计算配置 ===
+compute:
+  gpu_ids: [0]
+  mixed_precision: false
+  find_unused_parameters: false
+  sync_batchnorm: false         # 单GPU时不需要
+  profiler: null                # 可选：'simple', 'advanced', 'pytorch'
+  num_sanity_val_steps: 2       # 训练前验证步骤数
+
+# === 实验特定配置 ===
+experiment_config:
+  # 类别平衡策略
+  class_balance_strategy: "focal_loss"
+  
+  # 评估策略
+  evaluation_strategy:
+    use_tta: false              # 人工标注模式下关闭TTA节省时间
+    tta_augmentations: 4
+    confidence_threshold: 0.5
+    save_predictions: true
+    save_probabilities: true
+  
+  # 报告生成
+  reporting:
+    generate_confusion_matrix: true
+    generate_roc_curve: true
+    generate_precision_recall_curve: true
+    generate_uncertainty_analysis: true     # 主动学习特有
+    save_predictions: true
+    save_model_summary: true
+    save_annotation_statistics: true       # 人工标注统计
+  
+  # 可视化配置
+  visualization:
+    plot_learning_curves: true
+    plot_annotation_distribution: true     # 标注分布可视化
+    plot_uncertainty_distribution: true    # 不确定性分布
+    save_sample_predictions: true          # 保存样本预测结果
+
+# === 调试配置 ===
+debug:
+  fast_dev_run: false           # 快速开发运行模式
+  overfit_batches: 0.0          # 过拟合测试 (0.0=关闭, 0.1=10%数据)
+  validate_data_on_start: true  # 训练前验证数据
+  run_model_test: false         # 运行模型测试
+  profile_model: false          # 性能分析
+  log_model_stats: true         # 记录模型统计信息
+
+# === 实验记录 ===
+experiment_log:
+  # 预期指标 (人工标注模式下的目标)
+  expected_metrics:
+    baseline_f1: 0.75           # 基线F1分数
+    target_f1: 0.85             # 主动学习目标F1分数
+    val_accuracy: 0.88          # 验证准确率目标
+    training_time_hours: 4.0    # 预期训练时间 (包含人工标注)
+  
+  # 基线对比
+  baseline_comparison:
+    previous_best_f1: 0.75      # 之前最佳F1分数
+    improvement_target: 0.10    # 改进目标
+    annotation_efficiency: 5.0  # 标注效率倍数 (vs 随机标注)
+  
+  # 人工标注相关记录
+  annotation_tracking:
+    total_annotation_budget: 100        # 总标注预算
+    expert_id: "expert_001"            # 专家标识
+    annotation_start_date: "2025-07-30"
+    annotation_guidelines_version: "v1.0"
+    quality_control_method: "single_expert"  # 质量控制方法
+
+# === 数据质量控制 ===
+data_quality:
+  # 输入数据验证
+  input_validation:
+    check_missing_files: true
+    check_data_integrity: true
+    validate_labels: true
+    check_channel_consistency: true
+  
+  # 标注质量控制
+  annotation_quality_control:
+    enable_confidence_tracking: true    # 跟踪标注置信度
+    min_required_confidence: 0.6       # 最低要求置信度
+    flag_low_confidence_samples: true  # 标记低置信度样本
+    save_annotation_metadata: true     # 保存标注元数据
+  
+  # 数据统计和监控
+  monitoring:
+    track_class_distribution: true     # 跟踪类别分布
+    monitor_data_drift: false          # 数据漂移监控 (可选)
+    log_data_statistics: true          # 记录数据统计
+
+# === 安全和备份配置 ===
+backup:
+  auto_save_frequency: 300      # 自动保存频率 (秒)
+  keep_checkpoint_history: 3    # 保留检查点历史数量
+  backup_annotations: true      # 备份人工标注
+  compress_logs: false          # 压缩日志文件

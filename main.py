@@ -23,7 +23,7 @@ from omegaconf import DictConfig, OmegaConf
 from lightning_landslide.src.utils.instantiate import instantiate_from_config, validate_config_structure
 from lightning_landslide.src.utils.logging_utils import setup_logging, get_project_logger
 from lightning_landslide.src.training.simple_kfold_trainer import SimpleKFoldTrainer
-from lightning_landslide.src.active_learning.active_pseudo_trainer import create_active_pseudo_trainer
+from lightning_landslide.src.active_learning.human_guided_active_learning import create_human_guided_active_learning
 
 logger = get_project_logger(__name__)
 
@@ -268,27 +268,30 @@ class ExperimentRunner:
         return kfold_trainer.run_kfold_training()
 
     def _run_active_learning_training(self) -> Dict[str, Any]:
-        """运行主动学习+伪标签训练"""
+        """运行主动学习训练 - 支持人工指导"""
         logger.info("🎯🏷️ Running Active Learning + Pseudo Labeling...")
 
-        # 创建主动伪标签训练器
-        active_trainer = create_active_pseudo_trainer(
-            config=dict(self.config),
-            experiment_name=self.config.experiment_name,
-            output_dir=self.config.outputs.experiment_dir,
-        )
+        # 检查标注模式
+        annotation_mode = self.config.get("active_pseudo_learning", {}).get("annotation_mode", "simulated")
+
+        if annotation_mode == "human":
+            logger.info("👤 Using HUMAN-GUIDED active learning")
+            # 使用人工指导实现
+            trainer = create_human_guided_active_learning(
+                config=dict(self.config),
+                experiment_name=self.config.experiment_name,
+                output_dir=self.config.outputs.experiment_dir,
+            )
+        else:
+            # 结束程序
+            raise ValueError("Human-guided active learning is not implemented yet")
 
         # 运行主动学习流程
-        results = active_trainer.run()
+        results = trainer.run()
 
         return {
-            "active_pseudo_results": results.to_dict(),
-            "best_model_path": results.best_model_path,
-            "final_model_path": results.final_model_path,
-            "best_performance": (
-                max(results.performance_history["val_f1"]) if results.performance_history["val_f1"] else 0
-            ),
-            "total_iterations": results.convergence_iteration,
+            "active_learning_results": results,
+            "annotation_mode": annotation_mode,
             "training_completed": True,
         }
 
