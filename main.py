@@ -186,7 +186,7 @@ class ExperimentRunner:
             elif self.task == "kfold":
                 return self._run_kfold_training()
             elif self.task == "active_train":
-                return self._run_active_learning_training()
+                return self._run_active_training()
             elif self.task == "active_kfold":
                 return self._run_active_kfold_training()
             else:
@@ -267,7 +267,7 @@ class ExperimentRunner:
 
         return kfold_trainer.run_kfold_training()
 
-    def _run_active_learning_training(self) -> Dict[str, Any]:
+    def _run_active_training(self) -> Dict[str, Any]:
         """运行主动学习训练 - 支持人工指导"""
         logger.info("🎯🏷️ Running Active Learning + Pseudo Labeling...")
 
