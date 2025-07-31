@@ -37,7 +37,6 @@ import pytorch_lightning as pl
 from ..data.kfold_extension import create_kfold_wrapper
 from ..utils.instantiate import instantiate_from_config
 from .simple_kfold_trainer import SimpleKFoldTrainer
-from ..active_learning.active_pseudo_trainer import ActivePseudoTrainer, ActivePseudoTrainingResults
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,6 @@ logger = logging.getLogger(__name__)
 class ActiveKFoldResults:
     """主动学习+K折交叉验证的结果"""
 
-    fold_results: List[ActivePseudoTrainingResults]
     aggregated_performance: Dict[str, float]
     cross_fold_analysis: Dict[str, Any]
     best_fold_index: int
@@ -148,33 +146,6 @@ class ActiveKFoldTrainer:
             seed=self.seed,
             output_dir=str(self.output_dir / "kfold_info"),
         )
-
-    def _run_active_learning_for_fold(self, fold_idx: int, kfold_wrapper) -> ActivePseudoTrainingResults:
-        """为单个fold运行主动学习"""
-        logger.info(f"🎯 Running active learning for fold {fold_idx}...")
-
-        # 创建fold特定的配置
-        fold_config = self._create_fold_config(fold_idx, kfold_wrapper)
-
-        # 创建fold特定的输出目录
-        fold_output_dir = self.output_dir / f"fold_{fold_idx}"
-        fold_output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 创建主动学习训练器
-        active_trainer = ActivePseudoTrainer(
-            config=fold_config,
-            experiment_name=f"{self.experiment_name}_fold_{fold_idx}",
-            output_dir=str(fold_output_dir),
-        )
-
-        # 运行主动学习
-        fold_result = active_trainer.run()
-
-        logger.info(
-            f"✅ Fold {fold_idx} completed with best F1: {max(fold_result.performance_history['val_f1']) if fold_result.performance_history['val_f1'] else 0:.4f}"
-        )
-
-        return fold_result
 
     def _create_fold_config(self, fold_idx: int, kfold_wrapper) -> Dict:
         """为特定fold创建配置"""
@@ -349,32 +320,6 @@ class ActiveKFoldTrainer:
             efficiency_analysis["std_efficiency"] = np.std(fold_efficiencies)
 
         return efficiency_analysis
-
-    def _save_fold_result(self, fold_result: ActivePseudoTrainingResults, fold_idx: int):
-        """保存单个fold的结果"""
-        fold_dir = self.output_dir / f"fold_{fold_idx}"
-
-        # 保存fold结果摘要
-        with open(fold_dir / "fold_summary.json", "w") as f:
-            json.dump(
-                {
-                    "fold_index": fold_idx,
-                    "best_performance": (
-                        max(fold_result.performance_history["val_f1"])
-                        if fold_result.performance_history["val_f1"]
-                        else 0
-                    ),
-                    "convergence_iteration": fold_result.convergence_iteration,
-                    "total_training_time": fold_result.total_training_time,
-                    "final_data_count": (
-                        fold_result.data_usage_history["training_samples"][-1]
-                        if fold_result.data_usage_history["training_samples"]
-                        else 0
-                    ),
-                },
-                f,
-                indent=2,
-            )
 
     def _save_final_results(self, results: ActiveKFoldResults):
         """保存最终聚合结果"""

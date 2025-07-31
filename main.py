@@ -37,9 +37,8 @@ class ExperimentRunner:
 
     20250729-新增功能：
     1. active_train: 主动学习+伪标签训练
-    2. active_kfold: K折+主动学习融合
-    3. 完全向后兼容现有功能
-    4. 智能配置验证和错误处理
+    2. 完全向后兼容现有功能
+    3. 智能配置验证和错误处理
     """
 
     def __init__(self, config_path: str, task: str = "train", **kwargs):
@@ -48,7 +47,7 @@ class ExperimentRunner:
 
         Args:
             config_path: 配置文件路径
-            task: 任务类型 (train/predict/kfold/active_train/active_kfold)
+            task: 任务类型 (train/predict/kfold/active_train/)
             **kwargs: 额外的任务参数
         """
         setup_logging(level=logging.INFO)
@@ -71,7 +70,7 @@ class ExperimentRunner:
             raise ValueError("Invalid configuration structure")
 
         # 主动学习特定验证
-        if self.task in ["active_train", "active_kfold"]:
+        if self.task in ["active_train"]:
             self._validate_active_learning_config(config)
 
         logger.info("✓ Configuration loaded and validated")
@@ -124,10 +123,10 @@ class ExperimentRunner:
         logger.info(f"所有实验输出将保存到: {experiment_path}")
 
         # 创建所有必要的子目录
-        dirs_to_create = ["checkpoints", "logs", "predictions", "models", "visualizations", "data_versions"]
+        dirs_to_create = ["checkpoints", "logs", "models", "visualizations", "data_versions"]
 
         # 主动学习特定目录
-        if self.task in ["active_train", "active_kfold"]:
+        if self.task in ["active_train"]:
             dirs_to_create.extend(
                 ["active_learning", "pseudo_labels", "uncertainty_analysis", "iteration_results", "annotations"]
             )
@@ -142,7 +141,6 @@ class ExperimentRunner:
                 "experiment_dir": str(experiment_path),
                 "checkpoint_dir": str(experiment_path / "checkpoints"),
                 "log_dir": str(experiment_path / "logs"),
-                "prediction_dir": str(experiment_path / "predictions"),
                 "model_dir": str(experiment_path / "models"),
                 "visualization_dir": str(experiment_path / "visualizations"),
             }
@@ -181,14 +179,10 @@ class ExperimentRunner:
         try:
             if self.task == "train":
                 return self._run_standard_training()
-            elif self.task == "predict":
-                return self._run_prediction()
             elif self.task == "kfold":
                 return self._run_kfold_training()
             elif self.task == "active_train":
                 return self._run_active_training()
-            elif self.task == "active_kfold":
-                return self._run_active_kfold_training()
             else:
                 raise ValueError(f"Unknown task: {self.task}")
 
@@ -295,53 +289,6 @@ class ExperimentRunner:
             "training_completed": True,
         }
 
-    def _run_active_kfold_training(self) -> Dict[str, Any]:
-        """运行主动学习+K折交叉验证融合训练"""
-        logger.info("🔄🎯🏷️ Running Active Learning + K-fold Cross-validation...")
-
-        # 这是一个更复杂的组合策略
-        # 我们将在每个fold中都应用主动学习
-        from lightning_landslide.src.training.active_kfold_trainer import ActiveKFoldTrainer
-
-        active_kfold_trainer = ActiveKFoldTrainer(
-            config=dict(self.config),
-            experiment_name=self.config.experiment_name,
-            output_dir=self.config.outputs.experiment_dir,
-        )
-
-        return active_kfold_trainer.run()
-
-    def _run_prediction(self) -> Dict[str, Any]:
-        """运行预测任务"""
-        logger.info("🔮 Running prediction...")
-
-        # 加载模型
-        checkpoint_path = self.config.get("checkpoint_path")
-        if not checkpoint_path:
-            raise ValueError("checkpoint_path is required for prediction task")
-
-        model = instantiate_from_config(self.config.model)
-        model = model.load_from_checkpoint(checkpoint_path)
-
-        # 创建数据模块
-        datamodule = instantiate_from_config(self.config.data)
-
-        # 创建预测器
-        trainer = self._create_standard_trainer()
-
-        # 进行预测
-        predictions = trainer.predict(model, datamodule)
-
-        # 保存预测结果
-        prediction_path = Path(self.config.outputs.prediction_dir) / "predictions.csv"
-        # 这里需要根据具体的预测格式来保存
-
-        return {
-            "prediction_path": str(prediction_path),
-            "num_predictions": len(predictions) if predictions else 0,
-            "prediction_completed": True,
-        }
-
     def _create_standard_trainer(self) -> pl.Trainer:
         """创建标准PyTorch Lightning训练器"""
         from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
@@ -404,7 +351,7 @@ class ExperimentRunner:
             print(f"📊 DATA: {data_dir}")
 
         # 主动学习特定信息
-        if self.task in ["active_train", "active_kfold"] and "active_pseudo_learning" in self.config:
+        if self.task in ["active_train"] and "active_pseudo_learning" in self.config:
             apl_config = self.config.active_pseudo_learning
             print(f"🎯 MAX ITERATIONS: {apl_config.get('max_iterations', 5)}")
             print(f"🏷️ PSEUDO THRESHOLD: {apl_config.get('pseudo_labeling', {}).get('confidence_threshold', 0.9)}")
@@ -429,8 +376,6 @@ Examples:
   # 主动学习+伪标签训练
   python main.py active_train lightning_landslide/configs/optical_baseline_active.yaml
   
-  # 主动学习+K折交叉验证
-  python main.py active_kfold configs/optical_baseline_active_kfold.yaml
   
   # 预测
   python main.py predict configs/predict_config.yaml --checkpoint_path path/to/model.ckpt
@@ -439,7 +384,7 @@ Examples:
 
     parser.add_argument(
         "task",
-        choices=["train", "predict", "kfold", "active_train", "active_kfold"],
+        choices=["train", "predict", "kfold", "active_train"],
         help="Task to execute",
     )
 
@@ -496,7 +441,7 @@ def main():
             if "mean_cv_score" in results:
                 print(f"📈 Mean CV Score: {results['mean_cv_score']:.4f} ± {results['std_cv_score']:.4f}")
 
-        elif args.task in ["active_train", "active_kfold"]:
+        elif args.task in ["active_train"]:
             if "best_performance" in results:
                 print(f"🏆 Best Performance: {results['best_performance']:.4f}")
             if "total_iterations" in results:
@@ -505,10 +450,6 @@ def main():
         elif args.task == "train":
             if results.get("best_checkpoint"):
                 print(f"📁 Best model: {results['best_checkpoint']}")
-
-        elif args.task == "predict":
-            if results.get("prediction_path"):
-                print(f"📄 Predictions saved: {results['prediction_path']}")
 
     except Exception as e:
         print(f"\n❌ Task failed: {str(e)}")

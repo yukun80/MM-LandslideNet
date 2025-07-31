@@ -75,7 +75,6 @@ except ImportError as e:
 __all__ = [
     # 核心组件
     "ActivePseudoTrainer",
-    "create_active_pseudo_trainer",
     # 不确定性估计
     "BaseUncertaintyEstimator",
     "MCDropoutEstimator",
