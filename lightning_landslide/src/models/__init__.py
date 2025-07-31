@@ -1,1 +1,2 @@
 from .classification_module import LandslideClassificationModule
+
