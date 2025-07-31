@@ -375,10 +375,6 @@ Examples:
   
   # 主动学习+伪标签训练
   python main.py active_train lightning_landslide/configs/optical_baseline_active.yaml
-  
-  
-  # 预测
-  python main.py predict configs/predict_config.yaml --checkpoint_path path/to/model.ckpt
         """,
     )
 
