@@ -11,15 +11,44 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.font_manager as fm  # 🔧 新增
+import warnings  # 🔧 新增
 from pathlib import Path
 from tqdm import tqdm
 import cv2
 from typing import Optional, Tuple, List
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Add project path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from configs.config import Config
+
+
+# 🔧 新增：字体配置函数
+def configure_chinese_matplotlib():
+    """配置matplotlib支持中文显示，抑制字体警告"""
+    all_fonts = [f.name for f in fm.fontManager.ttflist]
+    priority_fonts = ["SimHei", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei"]
+
+    selected_font = None
+    for font in priority_fonts:
+        if font in all_fonts:
+            selected_font = font
+            break
+
+    if selected_font:
+        plt.rcParams.update(
+            {
+                "font.sans-serif": [selected_font, "DejaVu Sans"],
+                "axes.unicode_minus": False,
+            }
+        )
+    else:
+        plt.rcParams.update({"font.sans-serif": ["DejaVu Sans"], "axes.unicode_minus": False})
+
+    # 抑制字体警告
+    warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
 
 class MultiModalVisualizer:
@@ -35,6 +64,9 @@ class MultiModalVisualizer:
             config: Project configuration object
         """
         self.config = config
+
+        # 🔧 新增：配置字体
+        configure_chinese_matplotlib()
 
         # Create output directories
         self.output_dir = config.OUTPUT_ROOT / "datavision"
@@ -74,7 +106,7 @@ class MultiModalVisualizer:
             percentile_range: Percentile range for robust normalization
             channel_type: Data type ('optical', 'sar_intensity', 'sar_diff')
         Returns:
-            Normalized data [0, 1]
+            Normalized data [0, 1] for optical/sar_intensity, or centered for sar_diff
         """
         # Handle invalid values first
         valid_mask = np.isfinite(channel_data)
@@ -86,28 +118,42 @@ class MultiModalVisualizer:
         if channel_type == "sar_intensity":
             percentile_range = (1, 99)
             data = np.clip(data, -70, 50)  # 基于实际范围调整
+
+            # Standard percentile normalization for SAR intensity
+            p_low, p_high = np.percentile(data[valid_mask], percentile_range)
+            if p_high > p_low:
+                normalized = np.clip((data - p_low) / (p_high - p_low), 0, 1)
+            else:
+                normalized = np.zeros_like(data)
+
         elif channel_type == "sar_diff":
             # SAR difference data: preserve sign and use symmetric normalization
             percentile_range = (5, 95)  # Use wider range to preserve important changes
             # Handle outliers
             data = np.clip(data, -50, 50)  # Based on your channel stats
+
+            # 🔧 修复：使用对称的百分位数，保留正负值特征
+            valid_data = data[valid_mask]
+            p_low, p_high = np.percentile(valid_data, percentile_range)
+
+            # 计算对称的归一化范围
+            abs_max = max(abs(p_low), abs(p_high))
+
+            if abs_max > 0:
+                # 保持在 [-1, 1] 范围，不再强制转换到 [0, 1]
+                normalized = np.clip(data / abs_max, -1, 1)
+
+                # 🎨 为了可视化，使用双色图显示正负值
+                # 返回原始的对称归一化结果，让matplotlib处理颜色映射
+                return normalized
+            else:
+                normalized = np.zeros_like(data)
+
         else:
             # Optical data: original approach
             data = np.clip(data, 0, 25000)  # 基于实际数据范围调整裁剪阈值
 
-        # Percentile normalization
-        if channel_type == "sar_diff":
-            # For difference data, use symmetric normalization
-            abs_data = np.abs(data[valid_mask])
-            p_high = np.percentile(abs_data, percentile_range[1])
-            if p_high > 0:
-                normalized = np.clip(data / p_high, -1, 1)
-                # Convert to [0,1] range for display
-                normalized = (normalized + 1) / 2
-            else:
-                normalized = np.ones_like(data) * 0.5
-        else:
-            # Standard percentile normalization for optical and SAR intensity
+            # Standard percentile normalization for optical
             p_low, p_high = np.percentile(data[valid_mask], percentile_range)
             if p_high > p_low:
                 normalized = np.clip((data - p_low) / (p_high - p_low), 0, 1)
@@ -204,134 +250,148 @@ class MultiModalVisualizer:
         """
         try:
             # Create subplot layout (4x4) for 15 visualizations + 1 combined info panel
-            fig, axes = plt.subplots(4, 4, figsize=(20, 16))  # Reduced size to prevent memory issues
+            fig, axes = plt.subplots(4, 4, figsize=(20, 16))
             fig.suptitle(
                 f"Complete Multi-modal Landslide Detection Data Visualization - {image_id}",
                 fontsize=16,
                 fontweight="bold",
             )
 
-            # Individual Band Visualizations (Channels 0-11)
-            band_descriptions = [
-                "Red (Sentinel-2)",
-                "Green (Sentinel-2)",
-                "Blue (Sentinel-2)",
-                "Near Infrared (Sentinel-2)",
-                "Descending VV (Sentinel-1)",
-                "Descending VH (Sentinel-1)",
-                "Descending Diff VV",
-                "Descending Diff VH",
-                "Ascending VV (Sentinel-1)",
-                "Ascending VH (Sentinel-1)",
-                "Ascending Diff VV",
-                "Ascending Diff VH",
+            # Flatten axes for easier indexing
+            axes_flat = axes.flatten()
+
+            # 🔧 新增：定义颜色映射策略
+            channel_cmaps = [
+                "Reds",  # Channel 0: Red
+                "Greens",  # Channel 1: Green
+                "Blues",  # Channel 2: Blue
+                "RdYlBu_r",  # Channel 3: NIR
+                "gray",  # Channel 4: SAR VV Desc
+                "gray",  # Channel 5: SAR VH Desc
+                "RdBu_r",  # Channel 6: SAR Diff VV Desc
+                "RdBu_r",  # Channel 7: SAR Diff VH Desc
+                "gray",  # Channel 8: SAR VV Asc
+                "gray",  # Channel 9: SAR VH Asc
+                "RdBu_r",  # Channel 10: SAR Diff VV Asc
+                "RdBu_r",  # Channel 11: SAR Diff VH Asc
             ]
 
-            # Color maps for different band types
-            band_cmaps = [
-                "Reds",  # Red
-                "Greens",  # Green
-                "Blues",  # Blue
-                "RdYlBu_r",  # NIR
-                "gray",  # SAR VV Desc
-                "gray",  # SAR VH Desc
-                "RdBu_r",  # VV Diff Desc
-                "RdBu_r",  # VH Diff Desc
-                "gray",  # SAR VV Asc
-                "gray",  # SAR VH Asc
-                "RdBu_r",  # VV Diff Asc
-                "RdBu_r",  # VH Diff Asc
-            ]
+            # Visualize each individual channel (0-11)
+            for i in range(12):
+                ax = axes_flat[i]
+                channel_data = data[:, :, i]
 
-            # Display all 12 individual bands
-            for band in range(12):
-                row = band // 4
-                col = band % 4
+                # 🔧 修复：根据通道类型选择不同的可视化策略
+                if i in [6, 7, 10, 11]:  # SAR difference channels
+                    # 使用修复后的归一化方法，保持[-1, 1]范围
+                    normalized_data = self._normalize_channel(channel_data, channel_type="sar_diff")
+                    im = ax.imshow(normalized_data, cmap=channel_cmaps[i], vmin=-1, vmax=1)
 
-                band_data = self._create_sar_image(data, band)
-                im = axes[row, col].imshow(band_data, cmap=band_cmaps[band])
-                axes[row, col].set_title(f"Band {band}\n{band_descriptions[band]}", fontweight="bold", fontsize=9)
-                axes[row, col].axis("off")
-                try:
-                    plt.colorbar(im, ax=axes[row, col], fraction=0.046, pad=0.04)
-                except Exception as cb_error:
-                    print(f"⚠️ Colorbar warning for {image_id} band {band}: {cb_error}")
+                    # 添加颜色条显示正负值范围
+                    try:
+                        divider = make_axes_locatable(ax)
+                        cax = divider.append_axes("right", size="5%", pad=0.05)
+                        plt.colorbar(im, cax=cax, ticks=[-1, -0.5, 0, 0.5, 1])
+                    except Exception as e:
+                        print(f"Warning: Could not add colorbar for channel {i}: {e}")
 
-            # 13. True Color RGB Composite (position [3,0])
-            true_color = self._create_rgb_image(data, channels=[0, 1, 2])  # R-G-B
-            axes[3, 0].imshow(true_color)
-            axes[3, 0].set_title("True Color Composite\n(RGB: Bands 0-1-2)", fontweight="bold", fontsize=9)
-            axes[3, 0].axis("off")
+                elif i in [4, 5, 8, 9]:  # SAR intensity channels
+                    normalized_data = self._normalize_channel(channel_data, channel_type="sar_intensity")
+                    im = ax.imshow(normalized_data, cmap=channel_cmaps[i], vmin=0, vmax=1)
 
-            # 14. False Color NIR-R-G Composite (position [3,1])
+                else:  # Optical channels (0, 1, 2, 3) - 🔧 修复：使用彩色映射
+                    normalized_data = self._normalize_channel(channel_data, channel_type="optical")
+                    im = ax.imshow(normalized_data, cmap=channel_cmaps[i], vmin=0, vmax=1)
+
+                # Set title and remove ticks
+                ax.set_title(f"Ch{i}: {self.config.CHANNEL_DESCRIPTIONS[i]}", fontsize=10, fontweight="bold")
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            # Create RGB composite (channels 0, 1, 2)
+            rgb_image = self._create_rgb_image(data, channels=[0, 1, 2])
+            axes_flat[12].imshow(rgb_image)
+            axes_flat[12].set_title("RGB Composite", fontsize=10, fontweight="bold")
+            axes_flat[12].set_xticks([])
+            axes_flat[12].set_yticks([])
+
+            # Create False Color composite (NIR-R-G)
             false_color = self._create_false_color_image(data)
-            axes[3, 1].imshow(false_color)
-            axes[3, 1].set_title("False Color Composite\n(NIR-R-G: Bands 3-0-1)", fontweight="bold", fontsize=9)
-            axes[3, 1].axis("off")
+            axes_flat[13].imshow(false_color)
+            axes_flat[13].set_title("False Color (NIR-R-G)", fontsize=10, fontweight="bold")
+            axes_flat[13].set_xticks([])
+            axes_flat[13].set_yticks([])
 
-            # 15. NDVI (Normalized Difference Vegetation Index) (position [3,2])
+            # Calculate and display NDVI
             ndvi = self._calculate_ndvi(data)
-            ndvi_im = axes[3, 2].imshow(ndvi, cmap="RdYlGn", vmin=-1, vmax=1)
-            axes[3, 2].set_title("NDVI\n(NIR-Red)/(NIR+Red)", fontweight="bold", fontsize=9)
-            axes[3, 2].axis("off")
+            # 🔧 NDVI也需要保持其原始范围[-1, 1]
+            im_ndvi = axes_flat[14].imshow(ndvi, cmap="RdYlGn", vmin=-1, vmax=1)
+            axes_flat[14].set_title("NDVI", fontsize=10, fontweight="bold")
+            axes_flat[14].set_xticks([])
+            axes_flat[14].set_yticks([])
+
+            # Add colorbar for NDVI
             try:
-                plt.colorbar(ndvi_im, ax=axes[3, 2], fraction=0.046, pad=0.04)
-            except Exception as cb_error:
-                print(f"⚠️ NDVI colorbar warning for {image_id}: {cb_error}")
+                divider = make_axes_locatable(axes_flat[14])
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                plt.colorbar(im_ndvi, cax=cax, ticks=[-1, -0.5, 0, 0.5, 1])
+            except Exception as e:
+                print(f"Warning: Could not add NDVI colorbar: {e}")
 
-            # 16. Combined Information Panel (position [3,3])
-            stats_text = self._get_data_statistics(data)
-            channel_info = (
-                "Channel Mapping:\n"
-                "Optical: 0:Red, 1:Green, 2:Blue, 3:NIR\n"
-                "SAR Desc: 4:VV, 5:VH, 6:VV_Diff, 7:VH_Diff\n"
-                "SAR Asc: 8:VV, 9:VH, 10:VV_Diff, 11:VH_Diff"
-            )
-
-            combined_text = f"Data Statistics:\n{stats_text}\n\n{channel_info}"
-
-            axes[3, 3].text(
-                0.05,
-                0.95,
-                combined_text,
-                transform=axes[3, 3].transAxes,
-                fontsize=7,
-                verticalalignment="top",
-                fontfamily="monospace",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightsteelblue", alpha=0.8),
-            )
-            axes[3, 3].set_title("Dataset & Channel Info", fontweight="bold", fontsize=9)
-            axes[3, 3].axis("off")
-
-            # Add label information for training data
+            # Data information panel
             if not is_test and image_id in self.train_labels:
-                label = self.train_labels[image_id]
-                label_text = "Landslide" if label == 1 else "No Landslide"
-                label_color = "red" if label == 1 else "green"
+                label_text = "Landslide" if self.train_labels[image_id] == 1 else "No Landslide"
+                label_color = "red" if self.train_labels[image_id] == 1 else "green"
+            else:
+                label_text = "Test Sample"
+                label_color = "blue"
 
-                # Add label information at the top
-                fig.text(
-                    0.5,
-                    0.98,
-                    f"Label: {label_text}",
-                    horizontalalignment="center",
-                    fontsize=14,
-                    fontweight="bold",
-                    color=label_color,
-                    bbox=dict(boxstyle="round,pad=0.5", facecolor=label_color, alpha=0.2),
-                )
+            axes_flat[15].text(
+                0.1, 0.9, f"Sample ID: {image_id}", fontsize=12, fontweight="bold", transform=axes_flat[15].transAxes
+            )
+            axes_flat[15].text(
+                0.1,
+                0.8,
+                f"Label: {label_text}",
+                fontsize=12,
+                fontweight="bold",
+                color=label_color,
+                transform=axes_flat[15].transAxes,
+            )
+            axes_flat[15].text(
+                0.1,
+                0.6,
+                self._get_data_statistics(data),
+                fontsize=10,
+                transform=axes_flat[15].transAxes,
+                verticalalignment="top",
+            )
 
-            plt.tight_layout(rect=[0, 0.02, 1, 0.96])  # Leave space for title and label
+            # 🔧 修复：改用英文说明，避免字体问题
+            axes_flat[15].text(
+                0.1,
+                0.3,
+                "🔧 修复说明:\n• SAR差值通道保持原始正负值\n• 使用双色图显示变化趋势\n• 蓝色=负值,红色=正值",
+                fontsize=9,
+                color="purple",
+                transform=axes_flat[15].transAxes,
+                verticalalignment="top",
+            )
 
-            # Save image with better error handling
+            axes_flat[15].set_xlim(0, 1)
+            axes_flat[15].set_ylim(0, 1)
+            axes_flat[15].axis("off")
+
+            # Adjust layout
+            plt.tight_layout(rect=[0, 0.02, 1, 0.96])
+
+            # Save image
             if is_test:
                 save_path = self.test_output_dir / f"{image_id}.png"
             else:
                 save_path = self.train_output_dir / f"{image_id}.png"
 
-            # Use lower DPI to reduce memory usage and file size
             plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white", edgecolor="none")
-
             return save_path
 
         except Exception as e:
