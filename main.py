@@ -47,7 +47,7 @@ class ExperimentRunner:
 
         Args:
             config_path: 配置文件路径
-            task: 任务类型 (train/predict/kfold/active_train/)
+            task: 任务类型 (train/kfold/active_train/)
             **kwargs: 额外的任务参数
         """
         setup_logging(level=logging.INFO)
@@ -380,7 +380,7 @@ Examples:
 
     parser.add_argument(
         "task",
-        choices=["train", "predict", "kfold", "active_train"],
+        choices=["train", "kfold", "active_train"],
         help="Task to execute",
     )
 
