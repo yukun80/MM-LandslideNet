@@ -160,7 +160,7 @@ active_pseudo_learning:
   uncertainty_estimation:
     method: "mc_dropout"                # 方法：mc_dropout
     params:
-      n_forward_passes: 10              # MC Dropout前向传播次数
+      n_forward_passes: 5              # MC Dropout前向传播次数
       use_temperature_scaling: false    # 是否使用温度缩放
       dropout_rate: 0.2                 # 与模型配置中的dropout_rate一致
   

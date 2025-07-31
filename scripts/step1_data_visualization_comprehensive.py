@@ -325,9 +325,9 @@ class MultiModalVisualizer:
 
             # Save image with better error handling
             if is_test:
-                save_path = self.test_output_dir / f"{image_id}_visualization.png"
+                save_path = self.test_output_dir / f"{image_id}.png"
             else:
-                save_path = self.train_output_dir / f"{image_id}_visualization.png"
+                save_path = self.train_output_dir / f"{image_id}.png"
 
             # Use lower DPI to reduce memory usage and file size
             plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white", edgecolor="none")
