@@ -25,6 +25,7 @@ from dataclasses import dataclass
 import sys
 import os
 from copy import deepcopy
+import tqdm
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -394,36 +395,80 @@ class HumanGuidedActiveLearning:
 
     def _estimate_uncertainty(self, model: pl.LightningModule) -> np.ndarray:
         """MC Dropout不确定性估计"""
+        logger.info("🎯 开始不确定性估计 (快速模式)")
+        start_time = time.time()
+
         model.eval()
-
-        # 启用dropout进行不确定性估计
-        for module in model.modules():
-            if isinstance(module, torch.nn.Dropout):
-                module.train()
-
-        test_loader = self.datamodule.test_dataloader()
-        predictions = []
         device = next(model.parameters()).device
 
+        # # 启用dropout进行不确定性估计
+        # for module in model.modules():
+        #     if isinstance(module, torch.nn.Dropout):
+        #         module.train()
+
+        test_loader = self.datamodule.test_dataloader()
+
+        uncertainty_scores = []
+        total_batches = len(test_loader)
+
         with torch.no_grad():
-            for data, _ in test_loader:
+            # 添加进度条，让用户看到进度
+            pbar = tqdm.tqdm(test_loader, desc="🔍 不确定性估计", total=total_batches)
+
+            for batch_idx, (data, _) in enumerate(pbar):
                 data = data.to(device)
 
-                batch_preds = []
-                for _ in range(self.n_mc_passes):
-                    logits = model(data)
-                    probs = F.softmax(logits, dim=1)
-                    batch_preds.append(probs.cpu().numpy())
+                # 单次前向传播（避免MC采样的性能问题）
+                logits = model(data)
+                probs = F.softmax(logits, dim=1)
+                probs_np = probs.cpu().numpy()
 
-                batch_preds = np.stack(batch_preds)
-                predictions.append(batch_preds)
+                # 计算预测熵作为不确定性指标
+                probs_np = np.clip(probs_np, 1e-8, 1.0)  # 避免log(0)
+                batch_entropy = -np.sum(probs_np * np.log(probs_np), axis=1)
 
-        all_predictions = np.concatenate(predictions, axis=1)
-        pred_variance = np.var(all_predictions, axis=0)
-        uncertainty_scores = np.mean(pred_variance, axis=1)
+                uncertainty_scores.extend(batch_entropy.tolist())
 
-        logger.info(f"✅ 估计了 {len(uncertainty_scores)} 个样本的不确定性")
-        return uncertainty_scores
+                # 更新进度条信息
+                pbar.set_postfix(
+                    {
+                        "已处理": len(uncertainty_scores),
+                        "平均不确定性": f"{np.mean(batch_entropy):.3f}",
+                        "当前批次": f"{batch_idx+1}/{total_batches}",
+                    }
+                )
+            uncertainty_scores = np.array(uncertainty_scores)
+            elapsed_time = time.time() - start_time
+
+            logger.info(f"✅ 不确定性估计完成!")
+            logger.info(f"📊 处理了 {len(uncertainty_scores)} 个样本")
+            logger.info(f"⏱️ 耗时: {elapsed_time:.1f} 秒")
+            logger.info(f"📈 平均不确定性: {np.mean(uncertainty_scores):.4f}")
+            logger.info(f"📉 不确定性范围: {np.min(uncertainty_scores):.4f} - {np.max(uncertainty_scores):.4f}")
+
+            return uncertainty_scores
+
+        # predictions = []
+
+        # with torch.no_grad():
+        #     for data, _ in test_loader:
+        #         data = data.to(device)
+
+        #         batch_preds = []
+        #         for _ in range(self.n_mc_passes):
+        #             logits = model(data)
+        #             probs = F.softmax(logits, dim=1)
+        #             batch_preds.append(probs.cpu().numpy())
+
+        #         batch_preds = np.stack(batch_preds)
+        #         predictions.append(batch_preds)
+
+        # all_predictions = np.concatenate(predictions, axis=0)
+        # pred_variance = np.var(all_predictions, axis=0)
+        # uncertainty_scores = np.mean(pred_variance, axis=1)
+
+        # logger.info(f"✅ 估计了 {len(uncertainty_scores)} 个样本的不确定性")
+        # return uncertainty_scores
 
     def _select_active_samples(self, uncertainty_scores: np.ndarray) -> List[int]:
         """选择最不确定的样本"""
