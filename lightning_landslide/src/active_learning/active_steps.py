@@ -135,7 +135,7 @@ class BaseActiveStep(ABC):
 
         if checkpoint_dir.exists():
             # 寻找best开头的检查点文件
-            best_ckpts = list(checkpoint_dir.glob("best-*.ckpt"))
+            best_ckpts = list(checkpoint_dir.glob("baseline_epoch*.ckpt"))
             if best_ckpts:
                 # 选择最新的文件
                 latest_ckpt = max(best_ckpts, key=lambda x: x.stat().st_mtime)
@@ -238,47 +238,168 @@ class UncertaintyEstimator(BaseActiveStep):
         test_loader = datamodule.test_dataloader()
         uncertainty_scores = {}
 
+        # 添加dropout激活
+        if self.method == "mc_dropout":
+            for module in model.modules():
+                if isinstance(module, torch.nn.Dropout):
+                    module.train()
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(test_loader):
-                # 获取batch数据
-                if isinstance(batch, (tuple, list)) and len(batch) >= 3:
-                    images, labels, sample_ids = batch
-                else:
-                    logger.warning(f"Unexpected batch format: {type(batch)}")
+                try:
+                    # 详细调试第一个batch
+                    if batch_idx == 0:
+                        logger.info(f"🔍 Batch type: {type(batch)}")
+                        if hasattr(batch, "__len__"):
+                            logger.info(f"🔍 Batch length: {len(batch)}")
+
+                        # 如果是list或tuple，检查每个元素
+                        if isinstance(batch, (list, tuple)):
+                            for i, item in enumerate(batch):
+                                logger.info(f"🔍 Item {i}: type={type(item)}")
+                                if hasattr(item, "shape"):
+                                    logger.info(f"🔍 Item {i} shape: {item.shape}")
+                                elif isinstance(item, (list, tuple)):
+                                    logger.info(f"🔍 Item {i} length: {len(item)}")
+                                    if len(item) > 0:
+                                        logger.info(f"🔍 Item {i}[0]: {type(item[0])}")
+
+                    # 灵活解析batch数据
+                    images = None
+                    sample_ids = None
+
+                    if isinstance(batch, torch.Tensor):
+                        # 如果batch直接是tensor
+                        images = batch
+                        sample_ids = [f"sample_{batch_idx}_{i}" for i in range(images.size(0))]
+                    elif isinstance(batch, (list, tuple)):
+                        if len(batch) >= 1 and isinstance(batch[0], torch.Tensor):
+                            images = batch[0]
+
+                            # 尝试获取sample_ids
+                            if len(batch) >= 3:
+                                # 第三个元素可能是sample_ids
+                                potential_ids = batch[2]
+                                if isinstance(potential_ids, (list, tuple)):
+                                    sample_ids = [str(sid) for sid in potential_ids]
+                                elif isinstance(potential_ids, torch.Tensor):
+                                    # 如果是tensor，转换为字符串列表
+                                    sample_ids = [f"id_{int(sid)}" for sid in potential_ids.cpu().numpy()]
+                                else:
+                                    sample_ids = [f"sample_{batch_idx}_{i}" for i in range(images.size(0))]
+                            else:
+                                # 生成默认sample_ids
+                                sample_ids = [f"sample_{batch_idx}_{i}" for i in range(images.size(0))]
+                        else:
+                            logger.warning(f"Cannot parse batch at index {batch_idx}")
+                            continue
+                    else:
+                        logger.warning(f"Unsupported batch type: {type(batch)}")
+                        continue
+
+                    if images is None:
+                        logger.warning(f"No valid images found in batch {batch_idx}")
+                        continue
+
+                    # 确保images格式正确
+                    if not isinstance(images, torch.Tensor):
+                        logger.warning(f"Images is not a tensor: {type(images)}")
+                        continue
+
+                    images = images.to(device)
+                    batch_size = images.size(0)
+
+                    if batch_idx == 0:
+                        logger.info(f"✅ Processing batch with {batch_size} samples")
+                        logger.info(f"✅ Images shape: {images.shape}")
+                        logger.info(f"✅ Sample IDs example: {sample_ids[:3] if len(sample_ids) >= 3 else sample_ids}")
+
+                    # 收集多次前向传播的预测
+                    predictions = []
+
+                    for pass_idx in range(self.n_forward_passes):
+                        try:
+                            logits = model(images)
+
+                            # 处理不同的输出格式
+                            if isinstance(logits, torch.Tensor):
+                                if logits.dim() == 1:
+                                    # 1D输出，添加类别维度
+                                    probs = torch.sigmoid(logits).unsqueeze(1)
+                                elif logits.dim() == 2:
+                                    if logits.size(1) == 1:
+                                        # 二分类单输出
+                                        probs = torch.sigmoid(logits)
+                                    else:
+                                        # 多分类输出
+                                        probs = torch.softmax(logits, dim=1)
+                                else:
+                                    logger.warning(f"Unexpected logits shape: {logits.shape}")
+                                    continue
+
+                                predictions.append(probs.cpu().numpy())
+                            else:
+                                logger.warning(f"Model output is not a tensor: {type(logits)}")
+                                continue
+
+                        except Exception as e:
+                            logger.error(f"Error in forward pass {pass_idx}: {e}")
+                            continue
+
+                    if len(predictions) == 0:
+                        logger.warning(f"No valid predictions for batch {batch_idx}")
+                        continue
+
+                    # 计算不确定性
+                    predictions = np.stack(predictions, axis=0)  # [n_passes, batch_size, n_classes]
+
+                    for i in range(batch_size):
+                        try:
+                            sample_pred = predictions[:, i, :]  # [n_passes, n_classes]
+
+                            # 计算预测方差（不确定性指标）
+                            mean_pred = np.mean(sample_pred, axis=0)
+                            variance = np.mean(np.var(sample_pred, axis=0))
+
+                            # 计算熵（不确定性指标）
+                            if mean_pred.shape[0] == 1:
+                                # 二分类情况
+                                p = np.clip(mean_pred[0], 1e-8, 1 - 1e-8)
+                                entropy = -(p * np.log(p) + (1 - p) * np.log(1 - p))
+                            else:
+                                # 多分类情况
+                                mean_pred_clipped = np.clip(mean_pred, 1e-8, 1.0)
+                                entropy = -np.sum(mean_pred_clipped * np.log(mean_pred_clipped))
+
+                            # 组合不确定性分数
+                            uncertainty = variance + 0.1 * entropy
+
+                            # 存储结果
+                            if sample_ids and i < len(sample_ids):
+                                sample_id = str(sample_ids[i])
+                            else:
+                                sample_id = f"sample_{batch_idx}_{i}"
+
+                            uncertainty_scores[sample_id] = float(uncertainty)
+
+                        except Exception as e:
+                            logger.error(f"Error computing uncertainty for sample {i} in batch {batch_idx}: {e}")
+                            continue
+
+                except Exception as e:
+                    logger.error(f"Error processing batch {batch_idx}: {e}")
                     continue
 
-                images = images.to(device)
-                batch_size = images.size(0)
+                # 每处理100个batch记录一次进度
+                if (batch_idx + 1) % 100 == 0:
+                    logger.info(f"📊 Processed {batch_idx + 1} batches, {len(uncertainty_scores)} samples so far")
 
-                # 收集多次前向传播的预测
-                predictions = []
+        if len(uncertainty_scores) == 0:
+            raise ValueError(
+                "No samples were processed successfully. Please check the data format and model compatibility."
+            )
 
-                for _ in range(self.n_forward_passes):
-                    with torch.no_grad():
-                        logits = model(images)
-                        probs = torch.softmax(logits, dim=1)
-                        predictions.append(probs.cpu().numpy())
-
-                # 计算不确定性
-                predictions = np.stack(predictions, axis=0)  # [n_passes, batch_size, n_classes]
-
-                for i in range(batch_size):
-                    sample_pred = predictions[:, i, :]  # [n_passes, n_classes]
-
-                    # 计算预测方差（不确定性指标）
-                    mean_pred = np.mean(sample_pred, axis=0)
-                    variance = np.mean(np.var(sample_pred, axis=0))
-
-                    # 计算熵（另一个不确定性指标）
-                    entropy = -np.sum(mean_pred * np.log(mean_pred + 1e-8))
-
-                    # 组合不确定性分数
-                    uncertainty = variance + 0.1 * entropy
-
-                    # 存储结果
-                    sample_id = sample_ids[i] if isinstance(sample_ids[i], str) else str(sample_ids[i])
-                    uncertainty_scores[sample_id] = float(uncertainty)
-
+        logger.info(f"📊 Successfully processed {len(uncertainty_scores)} samples")
         logger.info(
             f"📊 Uncertainty range: {min(uncertainty_scores.values()):.4f} - {max(uncertainty_scores.values()):.4f}"
         )

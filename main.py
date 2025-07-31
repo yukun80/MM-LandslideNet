@@ -21,7 +21,6 @@ from lightning_landslide.src.utils.logging_utils import setup_logging, get_proje
 from lightning_landslide.src.training.simple_kfold_trainer import SimpleKFoldTrainer
 
 # 导入主动学习模块
-from lightning_landslide.src.active_learning.human_guided_active_learning import create_human_guided_active_learning
 from lightning_landslide.src.active_learning.active_steps import ActiveLearningStepManager
 
 logger = get_project_logger(__name__)

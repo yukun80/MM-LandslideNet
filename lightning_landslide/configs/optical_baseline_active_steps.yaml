@@ -6,7 +6,7 @@
 # 前置条件：已完成基础训练并保存权重到 lightning_landslide/exp/optical_swin_tiny_0724/checkpoints/
 
 # === 实验元信息 ===
-experiment_name: "optical_swin_tiny_0724_active_steps"
+experiment_name: "optical_swin_tiny_0731_active_steps"
 description: "Stepwise active learning based on successful optical_swin_tiny_0724 baseline"
 version: "2.0.0"
 tags: ["optical", "active_learning", "stepwise", "swin", "binary_classification"]
@@ -276,10 +276,10 @@ loggers:
 # === 输出目录配置 ===
 # 新的实验目录，与baseline分开
 outputs:
-  experiment_dir: "lightning_landslide/exp/optical_swin_tiny_0724_active_steps"
-  log_dir: "lightning_landslide/exp/optical_swin_tiny_0724_active_steps/logs"
-  model_dir: "lightning_landslide/exp/optical_swin_tiny_0724_active_steps/models"
-  checkpoint_dir: "lightning_landslide/exp/optical_swin_tiny_0724_active_steps/checkpoints"
+  experiment_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps"
+  log_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/logs"
+  model_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/models"
+  checkpoint_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/checkpoints"
 
 # === 硬件和性能配置 ===
 # 与baseline保持一致
