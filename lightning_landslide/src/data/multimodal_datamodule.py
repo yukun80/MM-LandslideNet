@@ -54,6 +54,8 @@ class MultiModalDataModule(pl.LightningDataModule):
         train_csv: str,
         test_csv: str,
         exclude_ids_file: Optional[str] = None,
+        # 🔧 新增：跨目录映射配置
+        cross_directory_mapping: Optional[str] = None,
         # 通道配置
         channel_config: Dict[str, Any] = None,
         active_mode: str = "optical_only",
@@ -82,14 +84,15 @@ class MultiModalDataModule(pl.LightningDataModule):
             train_csv: 训练数据标签文件
             test_csv: 测试数据标签文件
             exclude_ids_file: 需要排除的样本ID文件
+            cross_directory_mapping: 跨目录数据路径映射文件 (JSON格式)
             channel_config: 通道配置字典
             active_mode: 当前使用的数据模式
             batch_size: 批次大小
             num_workers: 数据加载工作进程数
             pin_memory: 是否将数据固定在内存中
             shuffle_train: 是否打乱训练数据
-            val_split: 验证集比例
-            stratify: 是否使用分层采样
+            val_split: 验证集划分比例
+            stratify: 是否进行分层划分
             use_weighted_sampling: 是否使用加权采样
             preprocessing: 预处理配置
             augmentation: 数据增强配置
@@ -107,8 +110,11 @@ class MultiModalDataModule(pl.LightningDataModule):
         self.test_csv = Path(test_csv)
         self.exclude_ids_file = exclude_ids_file
 
-        # 通道配置
-        self.channel_config = channel_config
+        # 🔧 新增：跨目录映射支持
+        self.cross_directory_mapping = cross_directory_mapping
+
+        # 通道和模式配置
+        self.channel_config = channel_config or self._get_default_channel_config()
         self.active_mode = active_mode
 
         # 数据加载配置
@@ -121,8 +127,9 @@ class MultiModalDataModule(pl.LightningDataModule):
         self.val_split = val_split
         self.stratify = stratify
         self.use_weighted_sampling = use_weighted_sampling
+        self.seed = seed
 
-        # 预处理和增强配置
+        # 预处理配置
         self.preprocessing = preprocessing or {}
         self.augmentation = augmentation or {}
 
@@ -137,11 +144,38 @@ class MultiModalDataModule(pl.LightningDataModule):
         # 数据统计信息
         self._data_stats = {}
 
-        logger.info(f"🔢MultiModalDataModule initialized" + "-" * 100)
+        # 🔧 加载跨目录映射文件
+        self._cross_directory_mapping_dict = self._load_cross_directory_mapping()
+
+        logger.info("🔢MultiModalDataModule initialized" + "-" * 100)
         logger.info(f"Active mode: {self.active_mode}")
         logger.info(f"Batch size: {self.batch_size}, Workers: {self.num_workers}")
         logger.info(f"Validation split: {self.val_split}")
+        if self.cross_directory_mapping:
+            logger.info(f"🎩 Cross-directory mapping: {len(self._cross_directory_mapping_dict)} samples")
         logger.info("-" * 100)
+
+    def _load_cross_directory_mapping(self) -> Dict[str, str]:
+        """加载跨目录数据路径映射"""
+        if not self.cross_directory_mapping:
+            return {}
+
+        mapping_file = Path(self.cross_directory_mapping)
+        if not mapping_file.exists():
+            logger.warning(f"Cross-directory mapping file not found: {mapping_file}")
+            return {}
+
+        try:
+            import json
+
+            with open(mapping_file, "r") as f:
+                mapping = json.load(f)
+
+            logger.info(f"📁 Loaded cross-directory mapping: {len(mapping)} samples")
+            return mapping
+        except Exception as e:
+            logger.error(f"Failed to load cross-directory mapping: {e}")
+            return {}
 
     def _create_transforms(self, stage: str) -> Optional[Callable]:
         """
@@ -221,6 +255,8 @@ class MultiModalDataModule(pl.LightningDataModule):
                 transform=self._create_transforms("train"),
                 channel_config=self.channel_config,
                 usage_mode=self.active_mode,
+                # 🔧 传递跨目录映射
+                cross_directory_mapping=self._cross_directory_mapping_dict,
             )
 
             # 分割训练集和验证集
@@ -240,11 +276,11 @@ class MultiModalDataModule(pl.LightningDataModule):
                     self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
                     self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
 
-                logger.info(f"Dataset split: Train={len(self.train_dataset)}, Val={len(self.val_dataset)}")
-            else:
-                self.train_dataset = full_dataset
-                self.val_dataset = None
-                logger.info(f"Using full dataset for training: {len(self.train_dataset)} samples")
+                    logger.info(f"Dataset split: Train={len(self.train_dataset)}, Val={len(self.val_dataset)}")
+                else:
+                    self.train_dataset = full_dataset
+                    self.val_dataset = None
+                    logger.info(f"Using full dataset for training: {len(self.train_dataset)} samples")
 
         if stage == "test" or stage is None:
             # 创建测试数据集

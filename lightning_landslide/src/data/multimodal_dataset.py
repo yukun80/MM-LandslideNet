@@ -34,12 +34,11 @@ class MultiModalDataset(Dataset):
         cache_data: bool = True,
         channel_config: Optional[Dict] = None,
         usage_mode: str = "optical_only",
+        # 🔧 新增：跨目录映射支持
+        cross_directory_mapping: Optional[Dict[str, str]] = None,
     ):
         """
         初始化光学数据集
-
-        这个初始化方法设计得非常灵活，既支持您当前的数据格式，
-        也为未来的扩展留下了空间。
 
         Args:
             data_dir: 数据文件目录路径
@@ -50,6 +49,7 @@ class MultiModalDataset(Dataset):
             cache_data: 是否缓存数据到内存（小数据集时有用）
             channel_config: 输入数据通道配置
             usage_mode: 使用模式
+            cross_directory_mapping: 跨目录数据路径映射字典 {sample_id: full_path}
         """
         logger.info("MultiModalDataset_init" + "-" * 100)
         # 路径处理
@@ -65,6 +65,9 @@ class MultiModalDataset(Dataset):
         self.usage_mode = usage_mode
         self.active_channels = self._parse_active_channels()
 
+        # 🔧 新增：跨目录映射支持
+        self.cross_directory_mapping = cross_directory_mapping or {}
+
         # 计算最终通道数
         self.num_channels = len(self.active_channels)
 
@@ -72,16 +75,35 @@ class MultiModalDataset(Dataset):
         self.data_cache = {} if cache_data else None
 
         # 加载样本索引和标签
-        self.data_index = self._load_data_index()
+        self.data_index = pd.read_csv(self.csv_file)
+        logger.info(f"🔢 Loaded {len(self.data_index)} samples from CSV")
 
-        # 加载排除列表
-        self.exclude_ids = self._load_exclude_ids(exclude_ids_file)
+        # 排除低质量样本
+        if exclude_ids_file:
+            exclude_ids_path = Path(exclude_ids_file)
+            if exclude_ids_path.exists():
+                with open(exclude_ids_path, "r") as f:
+                    exclude_ids = json.load(f)
+                logger.info(f"👮🔢 Loaded {len(exclude_ids)} samples to exclude")
 
-        # 过滤数据
-        self._filter_data()
+                original_count = len(self.data_index)
+                self.data_index = self.data_index[~self.data_index["ID"].isin(exclude_ids)]
+                excluded_count = original_count - len(self.data_index)
 
+                logger.info(f"👮🔢 Filtered out {excluded_count} low-quality samples")
+
+        logger.info(f"👮🔢 Remaining samples: {len(self.data_index)}")
+
+        # 检查是否有标签列
+        self.has_labels = "label" in self.data_index.columns
+
+        # 通道信息日志
         logger.info(f"🔢 Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
         logger.info(f"🔢 Final channel count: {self.num_channels}")
+
+        # 🔧 跨目录映射信息
+        if self.cross_directory_mapping:
+            logger.info(f"📁 Cross-directory mapping: {len(self.cross_directory_mapping)} samples")
 
     def _parse_active_channels(self) -> Dict[str, List[int]]:
         """解析当前使用模式下的活跃通道"""
@@ -224,13 +246,14 @@ class MultiModalDataset(Dataset):
 
     def _load_sample_data(self, sample_id: str) -> torch.Tensor:
         """
-        加载并处理单个样本多模态的数据
+        加载并处理单个样本多模态的数据 - 支持跨目录访问
 
         这个方法实现了您原有数据加载逻辑的核心部分：
-        1. 加载多通道.npy文件
-        2. 提取指定的光学通道
-        3. 计算NDVI通道
-        4. 组合成最终的多通道数据
+        1. 检查跨目录映射，优先使用映射路径
+        2. 加载多通道.npy文件
+        3. 提取指定的光学通道
+        4. 计算NDVI通道
+        5. 组合成最终的多通道数据
 
         Args:
             sample_id: 样本ID
@@ -239,8 +262,14 @@ class MultiModalDataset(Dataset):
             处理后的数据张量，形状为 (channels, height, width)
         """
 
-        # 构造数据文件路径
-        data_path = self.data_dir / f"{sample_id}.npy"
+        # 🔧 核心修改：优先使用跨目录映射路径
+        if sample_id in self.cross_directory_mapping:
+            data_path = Path(self.cross_directory_mapping[sample_id])
+            logger.debug(f"🔗 Using cross-directory path for {sample_id}: {data_path}")
+        else:
+            # 默认路径：在数据目录中查找
+            data_path = self.data_dir / f"{sample_id}.npy"
+            logger.debug(f"📁 Using default path for {sample_id}: {data_path}")
 
         if not data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -318,7 +347,10 @@ def create_train_dataset(
     transform: Callable = None,
     channel_config: Optional[Dict] = None,
     usage_mode: str = "optical_only",
+    # 🔧 新增：跨目录映射支持
+    cross_directory_mapping: Optional[Dict[str, str]] = None,
 ) -> MultiModalDataset:
+    """创建训练数据集 - 支持跨目录映射"""
 
     # 验证usage_mode的有效性
     valid_modes = channel_config.get("usage_modes", {}).keys()
@@ -335,6 +367,8 @@ def create_train_dataset(
         cache_data=True,
         channel_config=channel_config,
         usage_mode=usage_mode,
+        # 🔧 传递跨目录映射
+        cross_directory_mapping=cross_directory_mapping,
     )
 
 

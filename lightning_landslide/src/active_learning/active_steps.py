@@ -625,21 +625,160 @@ class ActiveRetrainer(BaseActiveStep):
         return pseudo_labels
 
     def _update_training_data(self, annotations: List[Dict], pseudo_labels: List[Dict]):
-        """更新训练数据"""
+        """更新训练数据 - 优雅的跨目录访问实现"""
         logger.info("📊 Updating training data...")
 
-        # 重用现有的数据模块
-        datamodule = instantiate_from_config(self.config["data"])
+        # 1. 创建增强的训练CSV文件
+        enhanced_csv_path = self._create_enhanced_training_csv(annotations, pseudo_labels)
 
-        # 在实际实现中，这里需要：
-        # 1. 将新标注的数据添加到训练集
-        # 2. 将伪标签添加到训练集
-        # 3. 更新数据模块的训练集
+        # 2. 创建数据路径映射文件
+        mapping_file = self._create_data_path_mapping(annotations, pseudo_labels)
+
+        # 3. 使用增强的配置创建数据模块
+        enhanced_config = self.config["data"].copy()
+        enhanced_config["params"]["train_csv"] = str(enhanced_csv_path)
+        # 🔧 关键：添加路径映射配置
+        enhanced_config["params"]["cross_directory_mapping"] = str(mapping_file)
+
+        # 创建使用新数据的数据模块
+        datamodule = instantiate_from_config(enhanced_config)
 
         logger.info(
             f"📊 Training data updated with {len(annotations)} annotations and {len(pseudo_labels)} pseudo labels"
         )
+        logger.info(f"📄 Enhanced training CSV: {enhanced_csv_path}")
+        logger.info(f"📁 Cross-directory mapping: {mapping_file}")
+
         return datamodule
+
+    def _create_data_path_mapping(self, annotations: List[Dict], pseudo_labels: List[Dict]) -> Path:
+        """创建数据路径映射文件，告诉数据加载器新样本的位置"""
+        import json
+
+        # 创建路径映射
+        path_mapping = {}
+        test_data_dir = Path(self.config["data"]["params"]["test_data_dir"])
+
+        # 添加人工标注样本的路径映射
+        for ann in annotations:
+            sample_id = ann["sample_id"]
+            source_file = test_data_dir / f"{sample_id}.npy"
+
+            if source_file.exists():
+                path_mapping[sample_id] = str(source_file)
+                logger.info(f"  📍 Mapped {sample_id} -> {source_file}")
+            else:
+                logger.warning(f"  ⚠️ Source file not found for {sample_id}: {source_file}")
+
+        # 添加伪标签样本的路径映射
+        for pseudo in pseudo_labels:
+            sample_id = pseudo["sample_id"]
+            source_file = test_data_dir / f"{sample_id}.npy"
+
+            if source_file.exists():
+                path_mapping[sample_id] = str(source_file)
+                logger.info(f"  📍 Mapped pseudo {sample_id} -> {source_file}")
+            else:
+                logger.warning(f"  ⚠️ Source file not found for pseudo {sample_id}: {source_file}")
+
+        # 保存映射文件
+        mapping_file = self.active_dir / f"data_path_mapping_iter_{self.state.iteration}.json"
+        with open(mapping_file, "w") as f:
+            json.dump(path_mapping, f, indent=2)
+
+        logger.info(f"📁 Data path mapping saved: {mapping_file}")
+        logger.info(f"📁 Successfully mapped {len(path_mapping)} samples from test directory")
+
+        return mapping_file
+
+    def _create_sample_link(self, sample_id: str, source_dir: Path, target_dir: Path):
+        """为单个样本创建符号链接或复制文件"""
+        source_file = source_dir / f"{sample_id}.npy"
+        target_file = target_dir / f"{sample_id}.npy"
+
+        if not source_file.exists():
+            logger.warning(f"  Source file not found: {source_file}")
+            return False
+
+        if target_file.exists():
+            logger.debug(f"  Target already exists: {target_file}")
+            return True
+
+        # 尝试创建符号链接（Linux/Mac）
+        target_file.symlink_to(source_file)
+        logger.debug(f"  Created symlink: {sample_id}")
+        return True
+
+    def _create_enhanced_training_csv(self, annotations: List[Dict], pseudo_labels: List[Dict]) -> Path:
+        """创建包含新标注数据的增强训练CSV文件"""
+        # 加载原始训练CSV
+        original_csv = self.config["data"]["params"]["train_csv"]
+        original_df = pd.read_csv(original_csv)
+
+        logger.info(f"📊 Original training data: {len(original_df)} samples")
+
+        # 准备新标注数据
+        new_rows = []
+
+        # 1. 添加人工标注数据
+        for ann in annotations:
+            sample_id = ann["sample_id"]
+            label = ann["label"]
+
+            new_row = {
+                "ID": sample_id,  # 匹配CSV格式中的"ID"列
+                "label": label,
+            }
+            new_rows.append(new_row)
+            logger.debug(f"  Added annotation: {sample_id} -> {label}")
+
+        # 2. 添加伪标签数据
+        for pseudo in pseudo_labels:
+            sample_id = pseudo["sample_id"]
+            label = pseudo["label"]
+            confidence = pseudo.get("confidence", 0.0)
+
+            new_row = {
+                "ID": sample_id,
+                "label": label,
+            }
+            new_rows.append(new_row)
+            logger.debug(f"  Added pseudo label: {sample_id} -> {label} (conf: {confidence:.3f})")
+
+        # 3. 合并数据
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            enhanced_df = pd.concat([original_df, new_df], ignore_index=True)
+
+            # 去重（以防重复添加）
+            before_dedup = len(enhanced_df)
+            enhanced_df = enhanced_df.drop_duplicates(subset=["ID"], keep="last")
+            after_dedup = len(enhanced_df)
+
+            if before_dedup != after_dedup:
+                logger.info(f"📊 Removed {before_dedup - after_dedup} duplicate samples")
+        else:
+            enhanced_df = original_df.copy()
+            logger.warning("⚠️ No new samples to add!")
+
+        # 4. 保存增强的CSV文件
+        enhanced_csv_path = self.active_dir / f"enhanced_train_iter_{self.state.iteration}.csv"
+        enhanced_df.to_csv(enhanced_csv_path, index=False)
+
+        # 5. 统计信息
+        added_annotations = len([ann for ann in annotations])
+        added_pseudo = len([pl for pl in pseudo_labels])
+
+        logger.info(f"📊 Enhanced training data: {len(enhanced_df)} samples (+{len(new_rows)} new)")
+        logger.info(f"  - Human annotations: {added_annotations}")
+        logger.info(f"  - Pseudo labels: {added_pseudo}")
+
+        # 6. 显示类别分布
+        if "label" in enhanced_df.columns:
+            class_counts = enhanced_df["label"].value_counts().sort_index()
+            logger.info(f"📊 Class distribution: {dict(class_counts)}")
+
+        return enhanced_csv_path
 
     def _retrain_model(self, datamodule) -> Tuple[pl.LightningModule, Dict[str, Any]]:
         """重训练模型（基于已有检查点进行fine-tuning）"""
@@ -648,12 +787,27 @@ class ActiveRetrainer(BaseActiveStep):
         # 重用现有的模型配置
         model = instantiate_from_config(self.config["model"])
 
+        # 🔧 修复：手动加载检查点权重，而不是恢复完整训练状态
+        logger.info(f"📥 Loading weights from checkpoint: {self.state.checkpoint_path}")
+        checkpoint = torch.load(self.state.checkpoint_path, map_location="cpu")
+
+        # 只加载模型权重，不恢复训练状态
+        if "state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["state_dict"])
+            logger.info("✅ Successfully loaded model weights")
+        else:
+            logger.warning("⚠️ No 'state_dict' found in checkpoint, loading as direct state dict")
+            model.load_state_dict(checkpoint)
+
         # 配置重训练的训练器（使用较少epoch）
         trainer_config = self.config.get("trainer", {}).get("params", {}).copy()
         trainer_config["max_epochs"] = 20  # 重训练使用较少epoch
         trainer_config["enable_model_summary"] = False  # 重训练时不显示模型摘要
 
-        # 添加重训练专用的回调
+        # 🔧 修复：先创建训练器（不包含callbacks）
+        trainer = pl.Trainer(**trainer_config)
+
+        # 🔧 修复：单独创建重训练专用的回调
         from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
         callbacks = [
@@ -668,12 +822,12 @@ class ActiveRetrainer(BaseActiveStep):
             EarlyStopping(monitor="val_f1", patience=5, mode="max", verbose=False),  # 重训练时更快早停
         ]
 
-        trainer_config["callbacks"] = callbacks
-        trainer = pl.Trainer(**trainer_config)
+        # 🔧 修复：直接将回调对象赋值给训练器实例，而不是配置对象
+        trainer.callbacks = callbacks
 
-        # 🔥 关键：从已有检查点开始fine-tuning，而不是从头训练
-        logger.info(f"📥 Loading from checkpoint: {self.state.checkpoint_path}")
-        trainer.fit(model, datamodule, ckpt_path=self.state.checkpoint_path)
+        # 🔥 关键修复：不使用ckpt_path参数，从全新的训练状态开始（但使用预加载的权重）
+        logger.info("🚀 Starting fine-tuning from epoch 0 (with pre-loaded weights)")
+        trainer.fit(model, datamodule)  # 不传递ckpt_path，重新开始训练计数
 
         # 更新状态中的检查点路径为新的最佳模型
         new_checkpoint = callbacks[0].best_model_path

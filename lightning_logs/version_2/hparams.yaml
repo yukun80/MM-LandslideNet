@@ -1,0 +1,140 @@
+base_model:
+  target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
+  params:
+    model_name: swinv2_tiny_window16_256
+    input_channels: 5
+    pretrained: true
+    dropout_rate: 0.2
+    pretrained_path: null
+    img_size: 256
+loss_config:
+  type: focal
+  focal_params:
+    alpha: 0.25
+    gamma: 2.0
+optimizer_config:
+  type: adamw
+  adamw_params:
+    lr: 4.0e-05
+    weight_decay: 0.01
+    betas:
+    - 0.9
+    - 0.95
+  differential_lr:
+    enable: true
+    backbone_lr_ratio: 0.1
+    classifier_lr_ratio: 1.0
+scheduler_config:
+  type: cosine_with_warmup
+  cosine_params:
+    T_0: 20
+    T_mult: 1
+    eta_min: 1.0e-07
+metrics_config:
+  primary_metric: f1
+  metrics:
+  - accuracy
+  - precision
+  - recall
+  - f1
+  - auroc
+  threshold: 0.5
+classifier_config:
+  type: simple
+  hidden_dim: null
+  use_batch_norm: false
+  activation: relu
+train_data_dir: dataset/train_data
+test_data_dir: dataset/test_data
+train_csv: lightning_landslide/exp/optical_swin_tiny_0731_active_steps/active_learning/enhanced_train_iter_0.csv
+test_csv: dataset/Test.csv
+exclude_ids_file: dataset/data_check/exclude_ids.json
+channel_config:
+  channel_groups:
+    optical:
+    - 0
+    - 1
+    - 2
+    - 3
+    sar_amplitude:
+    - 4
+    - 5
+    - 8
+    - 9
+    sar_difference:
+    - 6
+    - 7
+    - 10
+    - 11
+    derived:
+    - ndvi
+  usage_modes:
+    optical_only:
+      groups:
+      - optical
+      - derived
+      description: 仅使用光学数据，适合基线实验
+active_mode: optical_only
+batch_size: 16
+num_workers: 8
+pin_memory: true
+shuffle_train: true
+val_split: 0.2
+stratify: true
+use_weighted_sampling: false
+preprocessing:
+  normalization:
+    means:
+    - 1849.282
+    - 1953.906
+    - 1896.493
+    - 3291.47
+    - -9.624
+    - -17.11
+    - -0.699
+    - -0.483
+    - -10.671
+    - -18.442
+    - 0.248
+    - -0.234
+    stds:
+    - 1414.462
+    - 1338.292
+    - 1342.528
+    - 1448.362
+    - 7.904
+    - 9.245
+    - 4.062
+    - 4.283
+    - 6.333
+    - 8.691
+    - 2.777
+    - 3.932
+  ndvi_computation:
+    red_channel_idx: 0
+    nir_channel_idx: 3
+    epsilon: 1.0e-08
+    clip_range:
+    - -1
+    - 1
+augmentation:
+  train:
+    resize: 256
+    geometric:
+      random_flip: true
+      h_flip_prob: 0.5
+      v_flip_prob: 0.5
+      random_rotation: true
+      rotation_prob: 0.3
+      rotation_degrees:
+      - -10
+      - 10
+    spectral:
+      spectral_noise: true
+      noise_std: 0.005
+      noise_prob: 0.3
+  val:
+    resize: 256
+  test:
+    resize: 256
+seed: 3407
