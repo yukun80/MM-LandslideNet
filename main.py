@@ -323,7 +323,7 @@ Examples:
   
   # 步骤5：模型重训练
   python main.py retrain lightning_landslide/configs/optical_baseline_active_steps.yaml \
-    --annotation_file annotation_results.json
+--annotation_file lightning_landslide/exp/optical_swin_tiny_0731_active_steps/active_learning/annotation_results_iter_0.json
         """,
     )
 

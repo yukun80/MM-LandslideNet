@@ -1,0 +1,252 @@
+# =============================================================================
+# optical_convnext_baseline.yaml - ConvNextv2基线配置示例
+# =============================================================================
+
+# 这个配置文件展示了如何使用新添加的ConvNextv2模型
+# 只需要修改model.params.base_model.target即可从Swin Transformer切换到ConvNextv2
+
+# === 实验元信息 ===
+experiment_name: "optical_convnext_tiny_baseline"
+description: "ConvNextv2 baseline experiment for landslide detection using optical data"
+version: "1.0.0"
+tags: ["optical", "convnextv2", "baseline", "binary_classification"]
+
+# 研究人员信息
+author: "MM-LandslideNet Team"
+created_date: "2024-07-31"
+notes: |
+  ConvNextv2基线实验配置，与Swin Transformer配置几乎相同，
+  仅修改了模型类型。这展示了框架的模型无关性设计。
+  
+  使用方法：
+  python main.py train lightning_landslide/configs/optical_convnext_baseline.yaml
+
+# === 全局设置 ===
+seed: 3407
+log_level: "INFO"
+
+# === 模型配置 ===
+model:
+  target: lightning_landslide.src.models.classification_module.LandslideClassificationModule
+  params:
+    # 🔥 核心修改：使用ConvNextv2模型替代Swin Transformer
+    base_model:
+      target: lightning_landslide.src.models.optical_convnext.OpticalConvNextModel  # 关键修改点
+      params:
+        # ConvNextv2模型配置
+        model_name: "convnextv2_tiny.fcmae_ft_in22k_in1k"  # 使用tiny变体
+        input_channels: 5                                    # 5通道输入：R,G,B,NIR,NDVI
+        pretrained: true                                     # 使用预训练权重
+        dropout_rate: 0.2                                    # dropout比率
+        pretrained_path: null                                # 本地权重路径（可选）
+        img_size: 256                                        # 目标图像尺寸
+    
+    # 分类头配置 - 与Swin配置完全相同
+    classifier_config:
+      type: "simple"                    # 简单分类头：LayerNorm + Dropout + Linear
+      hidden_dim: null                  # null表示不使用MLP分类头
+      use_batch_norm: false            
+      activation: "relu"
+    
+    # 损失函数配置 - 与Swin配置完全相同
+    loss_config:
+      type: "focal"                     # 使用Focal Loss处理类别不平衡
+      focal_params: 
+        alpha: 0.25                     # 类别权重
+        gamma: 2.0                      # 聚焦参数
+    
+    # 优化器配置 - 与Swin配置完全相同
+    optimizer_config:
+      type: "adamw"
+      adamw_params: 
+        lr: 4e-5                        # 基础学习率
+        weight_decay: 1e-2              # 权重衰减
+        betas: [0.9, 0.95]              # Adam参数
+      differential_lr:
+        enable: true                    # 启用分层学习率
+        backbone_lr_ratio: 0.1          # 骨干网络学习率比例
+        classifier_lr_ratio: 1.0        # 分类头学习率比例
+    
+    # 学习率调度器配置 - 与Swin配置完全相同
+    scheduler_config:
+      type: "cosine_with_warmup"
+      cosine_params:
+        T_0: 20                         # 余弦退火周期
+        T_mult: 1                       # 周期倍增因子
+        eta_min: 1e-7                   # 最小学习率
+    
+    # 评估指标配置 - 与Swin配置完全相同
+    metrics_config:
+      primary_metric: "f1"              # 主要优化指标
+      metrics: ["accuracy", "precision", "recall", "f1", "auroc"]
+      threshold: 0.5                    # 分类阈值
+
+# === 数据配置 ===
+# 数据配置与模型无关，因此完全不需要修改
+data:
+  target: lightning_landslide.src.data.MultiModalDataModule
+  params:
+    # 数据路径
+    train_data_dir: "dataset/train_data"
+    test_data_dir: "dataset/test_data" 
+    train_csv: "dataset/Train.csv"
+    test_csv: "dataset/Test.csv"
+    exclude_ids_file: "dataset/data_check/exclude_ids.json"
+
+    # 通道配置 - 使用光学数据的前5个通道
+    channel_config:
+      channel_groups:
+        optical: [0, 1, 2, 3]           # R, G, B, NIR
+        sar_amplitude: [4, 5, 8, 9]     # 这里的配置会被optical覆盖
+        sar_difference: [6, 7, 10, 11]  # 这里的配置会被optical覆盖
+        
+      use_groups: ["optical"]           # 只使用光学数据
+      add_ndvi: true                    # 添加NDVI通道（第5个通道）
+      
+    # 数据加载配置
+    batch_size: 64                      # 批次大小
+    num_workers: 8                      # 数据加载进程数
+    pin_memory: true                    # 内存锁定加速
+    persistent_workers: true            # 持久化worker进程
+    
+    # 数据增强配置
+    augmentation:
+      train_transforms:
+        - type: "geometric"
+          params: {rotation: 15, scale: [0.8, 1.2], flip: true}
+        - type: "color"  
+          params: {brightness: 0.2, contrast: 0.2}
+        - type: "noise"
+          params: {gaussian_noise: 0.01}
+          
+      val_transforms:
+        - type: "basic"                 # 验证集只使用基本变换
+        
+    # 数据分割配置  
+    split_config:
+      train_ratio: 0.8                  # 训练集比例
+      val_ratio: 0.2                    # 验证集比例
+      stratify: true                    # 分层采样
+      
+# === 训练器配置 ===
+# 训练器配置与模型无关，因此完全不需要修改
+trainer:
+  target: pytorch_lightning.Trainer
+  params:
+    # 训练控制
+    max_epochs: 100                     # 最大训练轮数
+    min_epochs: 10                      # 最小训练轮数
+    
+    # 硬件配置
+    accelerator: "auto"                 # 自动选择加速器(GPU/CPU)
+    devices: "auto"                     # 自动选择设备数量
+    precision: "16-mixed"               # 混合精度训练
+    
+    # 验证和检查点
+    check_val_every_n_epoch: 1          # 每轮验证一次
+    enable_checkpointing: true          # 启用检查点保存
+    
+    # 早停配置
+    callbacks:
+      - target: pytorch_lightning.callbacks.EarlyStopping
+        params:
+          monitor: "val_f1"             # 监控验证F1分数
+          patience: 15                  # 耐心等待轮数
+          mode: "max"                   # F1越大越好
+          min_delta: 0.001              # 最小改进量
+          
+      - target: pytorch_lightning.callbacks.ModelCheckpoint  
+        params:
+          monitor: "val_f1"             # 保存最佳F1模型
+          mode: "max"
+          save_top_k: 3                 # 保存最好的3个模型
+          filename: "convnext-{epoch:02d}-{val_f1:.4f}"
+          
+      - target: pytorch_lightning.callbacks.LearningRateMonitor
+        params:
+          logging_interval: "step"      # 记录学习率变化
+    
+    # 日志配置
+    logger:
+      target: pytorch_lightning.loggers.TensorBoardLogger
+      params:
+        save_dir: "lightning_logs"
+        name: "optical_convnext_baseline"
+        
+    # 调试和优化
+    gradient_clip_val: 1.0              # 梯度裁剪
+    accumulate_grad_batches: 1          # 梯度累积
+    deterministic: true                 # 确定性训练
+    benchmark: true                     # CUDNN基准测试
+
+# === 输出配置 ===
+output:
+  # 实验输出目录
+  experiment_dir: "lightning_landslide/exp/${experiment_name}"
+  
+  # 保存内容
+  save_config: true                     # 保存完整配置
+  save_predictions: true                # 保存预测结果
+  save_features: false                  # 不保存中间特征
+  
+  # 可视化
+  plot_training_curves: true            # 绘制训练曲线
+  plot_confusion_matrix: true           # 绘制混淆矩阵
+  plot_roc_curve: true                  # 绘制ROC曲线
+
+# === 计算资源配置 ===
+compute:
+  # 内存优化
+  mixed_precision: true                 # 混合精度训练
+  compile_model: false                  # PyTorch 2.0编译（可选）
+  
+  # 分布式训练（单GPU时忽略）
+  strategy: "auto"                      # 训练策略
+  sync_batchnorm: false                 # 批次归一化同步
+
+# === 实验追踪配置 ===
+tracking:
+  # MLflow集成（可选）
+  use_mlflow: false
+  mlflow_experiment_name: "landslide_detection"
+  
+  # Weights & Biases集成（可选）  
+  use_wandb: false
+  wandb_project: "mm-landslide-net"
+  wandb_tags: ["convnextv2", "optical", "baseline"]
+
+# === 使用说明 ===
+# 
+# 1. 基础训练：
+#    python main.py train lightning_landslide/configs/optical_convnext_baseline.yaml
+#
+# 2. 模型对比：
+#    # 训练Swin Transformer
+#    python main.py train lightning_landslide/configs/optical_baseline.yaml
+#    
+#    # 训练ConvNextv2  
+#    python main.py train lightning_landslide/configs/optical_convnext_baseline.yaml
+#    
+#    # 比较两个模型的性能
+#
+# 3. 超参数调优：
+#    python main.py train lightning_landslide/configs/optical_convnext_baseline.yaml \
+#      --override model.params.optimizer_config.adamw_params.lr=5e-5 \
+#      --override model.params.base_model.params.dropout_rate=0.3
+#
+# 4. 使用更大的模型：
+#    python main.py train lightning_landslide/configs/optical_convnext_baseline.yaml \
+#      --override model.params.base_model.params.model_name=convnextv2_small.fcmae_ft_in22k_in1k
+#
+# === 预期结果 ===
+# 
+# ConvNextv2相比Swin Transformer的预期特点：
+# ✅ 训练更稳定，较少出现梯度问题
+# ✅ 推理速度通常更快
+# ✅ 在某些视觉任务上精度更高
+# ✅ 内存使用相对较少
+# 
+# 预期性能指标：
+# - 验证F1分数：0.78-0.82（取决于数据质量）
+# - 训练时间：相比Swin稍快
+# - GPU内存使用：相比Swin稍少

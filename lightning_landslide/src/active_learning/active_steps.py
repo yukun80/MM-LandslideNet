@@ -588,15 +588,22 @@ class ActiveRetrainer(BaseActiveStep):
 
         # 解析标注结果
         annotations = []
-        for sample_info in annotation_data.get("sample_details", []):
-            if sample_info.get("label") is not None:
-                annotations.append(
-                    {
-                        "sample_id": sample_info["sample_id"],
-                        "label": sample_info["label"],
-                        "confidence": sample_info.get("confidence", 1.0),
-                    }
-                )
+
+        if "annotations" in annotation_data:
+            for sample_id, label in annotation_data["annotations"].items():
+                if label is not None:  # 跳过 None 值（未标注的样本）
+                    annotations.append(
+                        {
+                            "sample_id": sample_id,
+                            "label": label,
+                            "confidence": 0.9,  # 人工标注默认置信度为0.9
+                        }
+                    )
+        else:
+            raise ValueError(
+                f"Unsupported annotation format in {annotation_path}. "
+                f"Expected 'sample_details', 'annotations' dict, or direct list format."
+            )
 
         logger.info(f"📥 Loaded {len(annotations)} annotations from: {annotation_path}")
         return annotations
