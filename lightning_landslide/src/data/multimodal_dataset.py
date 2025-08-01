@@ -5,22 +5,20 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import logging
 from typing import Tuple, Optional, Callable, List, Dict, Any, Union
-import json
 
 logger = logging.getLogger(__name__)
 
 
 class MultiModalDataset(Dataset):
     """
-    光学遥感数据集类
+    简化的多模态遥感数据集类
 
-    这个类专门处理您项目中的多通道遥感数据。它的核心职责是：
-
+    核心职责（简化后）：
     1. 数据加载：从.npy文件加载多通道数据
     2. 通道处理：提取并组合光学通道
     3. NDVI计算：实时计算归一化植被指数
-    4. 质量控制：过滤低质量样本
-    5. 标签处理：正确处理二分类标签
+    4. 标签处理：正确处理二分类标签
+    5. 数据变换：应用预处理和增强
 
     """
 
@@ -28,13 +26,12 @@ class MultiModalDataset(Dataset):
         self,
         data_dir: Union[str, Path],
         csv_file: Union[str, Path],
-        exclude_ids_file: Optional[Union[str, Path]] = None,
         transform: Optional[Callable] = None,
         compute_ndvi: bool = True,
         cache_data: bool = True,
         channel_config: Optional[Dict] = None,
         usage_mode: str = "optical_only",
-        # 🔧 新增：跨目录映射支持
+        # 🔧 跨目录映射支持（保留高级功能）
         cross_directory_mapping: Optional[Dict[str, str]] = None,
     ):
         """
@@ -42,8 +39,7 @@ class MultiModalDataset(Dataset):
 
         Args:
             data_dir: 数据文件目录路径
-            csv_file: 标签文件路径
-            exclude_ids_file: 需要排除的样本ID文件（JSON格式）
+            csv_file: 标签文件路径（已清洁的CSV文件）
             transform: 数据变换函数
             compute_ndvi: 是否计算NDVI通道
             cache_data: 是否缓存数据到内存（小数据集时有用）
@@ -61,11 +57,12 @@ class MultiModalDataset(Dataset):
         self.compute_ndvi = compute_ndvi
         self.cache_data = cache_data
 
+        # 通道配置
         self.channel_config = channel_config
         self.usage_mode = usage_mode
         self.active_channels = self._parse_active_channels()
 
-        # 🔧 新增：跨目录映射支持
+        # 🔧 跨目录映射支持（保留高级功能）
         self.cross_directory_mapping = cross_directory_mapping or {}
 
         # 计算最终通道数
@@ -74,38 +71,25 @@ class MultiModalDataset(Dataset):
         # 数据缓存（如果启用）
         self.data_cache = {} if cache_data else None
 
-        # 加载样本索引和标签
-        self.data_index = pd.read_csv(self.csv_file)
-        logger.info(f"🔢 Loaded {len(self.data_index)} samples from CSV")
-
-        # 排除低质量样本
-        if exclude_ids_file:
-            exclude_ids_path = Path(exclude_ids_file)
-            if exclude_ids_path.exists():
-                with open(exclude_ids_path, "r") as f:
-                    exclude_ids = json.load(f)
-                logger.info(f"👮🔢 Loaded {len(exclude_ids)} samples to exclude")
-
-                original_count = len(self.data_index)
-                self.data_index = self.data_index[~self.data_index["ID"].isin(exclude_ids)]
-                excluded_count = original_count - len(self.data_index)
-
-                logger.info(f"👮🔢 Filtered out {excluded_count} low-quality samples")
-
-        logger.info(f"👮🔢 Remaining samples: {len(self.data_index)}")
+        # 🎯 简化的数据加载流程
+        self.data_index = self._load_data_index()
 
         # 检查是否有标签列
         self.has_labels = "label" in self.data_index.columns
 
-        # 通道信息日志
-        logger.info(f"🔢 Active channels: {self.active_channels}, NDVI: {self.compute_ndvi}")
+        # 日志信息
+        logger.info(f"📊 Loaded {len(self.data_index)} samples from cleaned CSV")
+        logger.info(f"🔢 Active channels: {self.active_channels}")
         logger.info(f"🔢 Final channel count: {self.num_channels}")
+        logger.info(f"📋 Has labels: {self.has_labels}")
 
         # 🔧 跨目录映射信息
         if self.cross_directory_mapping:
             logger.info(f"📁 Cross-directory mapping: {len(self.cross_directory_mapping)} samples")
 
-    def _parse_active_channels(self) -> Dict[str, List[int]]:
+        logger.info("🔢✅ MultiModalDataset initialization completed!")
+
+    def _parse_active_channels(self) -> List[int]:
         """解析当前使用模式下的活跃通道"""
         mode_config = self.channel_config["usage_modes"][self.usage_mode]
         active_groups = mode_config["groups"]
@@ -123,66 +107,23 @@ class MultiModalDataset(Dataset):
         加载数据索引文件
 
         这个方法读取CSV文件，建立样本ID到标签的映射。
-        我们进行了一些数据质量检查，确保数据格式正确。
-
         Returns:
             包含ID和标签的DataFrame
         """
+        if not self.csv_file.exists():
+            raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
+
         df = pd.read_csv(self.csv_file)
 
-        # 检查是否有标签列（训练集有，测试集可能没有）
-        self.has_labels = "label" in df.columns
+        # 基本数据验证
+        if "ID" not in df.columns:
+            raise ValueError("CSV file must contain 'ID' column")
+
+        # 检查标签列（训练集有，测试集可能没有）
+        has_labels = "label" in df.columns
 
         logger.info(f"🔢 Loaded {len(df)} samples from CSV")
         return df.reset_index(drop=True)
-
-    def _load_exclude_ids(self, exclude_ids_file: Optional[Union[str, Path]]) -> set:
-        """
-        加载需要排除的样本ID列表
-
-        在数据质量分析阶段，您可能已经识别出了一些低质量的样本。
-        这个方法加载这些样本的ID，确保它们不会用于训练。
-
-        Args:
-            exclude_ids_file: 排除列表文件路径
-
-        Returns:
-            需要排除的样本ID集合
-        """
-        if exclude_ids_file is None:
-            return set()
-
-        exclude_path = Path(exclude_ids_file)
-        if not exclude_path.exists():
-            logger.warning(f"Exclude IDs file not found: {exclude_path}")
-            return set()
-
-        with open(exclude_path, "r") as f:
-            exclude_ids = json.load(f)
-
-        exclude_set = set(exclude_ids.get("excluded_image_ids", []))
-
-        logger.info(f"👮🔢 Loaded {len(exclude_set)} samples to exclude")
-        return exclude_set
-
-    def _filter_data(self) -> None:
-        """
-        过滤数据，移除排除列表中的样本
-
-        这个步骤确保我们只处理高质量的数据样本。
-        """
-        if not self.exclude_ids:
-            return
-
-        initial_count = len(self.data_index)
-
-        # 过滤排除样本
-        mask = ~self.data_index["ID"].isin(self.exclude_ids)
-        self.data_index = self.data_index[mask].reset_index(drop=True)
-
-        filtered_count = initial_count - len(self.data_index)
-        logger.info(f"👮🔢 Filtered out {filtered_count} low-quality samples")
-        logger.info(f"👮🔢 Remaining samples: {len(self.data_index)}")
 
     def __len__(self) -> int:
         """返回数据集大小"""
@@ -194,10 +135,10 @@ class MultiModalDataset(Dataset):
 
         这是数据集类的核心方法。它的职责是：
         1. 加载原始数据
-        2. 提取和处理光学通道
+        2. 提取和处理指定通道
         3. 计算NDVI（如果需要）
         4. 应用数据变换
-        5. 返回标准格式的数据
+        5. 返回tensor格式的数据和标签
 
         Args:
             idx: 样本索引
@@ -207,8 +148,6 @@ class MultiModalDataset(Dataset):
             - data: 形状为 (channels, height, width) 的张量
             - label: 标签张量
         """
-        if idx >= len(self):
-            raise IndexError(f"Index {idx} out of range for dataset size {len(self)}")
 
         # 获取样本信息
         """
@@ -309,7 +248,7 @@ class MultiModalDataset(Dataset):
         NDVI是遥感中最重要的植被指数之一，计算公式为：
         NDVI = (NIR - Red) / (NIR + Red)
 
-        在滑坡检测中，NDVI特别有用，因为：
+        NDVI在滑坡检测中的重要性：
         1. 滑坡区域通常植被覆盖较少
         2. NDVI能够突出植被与裸土的差异
         3. 时间序列NDVI变化能指示地表扰动
@@ -320,14 +259,10 @@ class MultiModalDataset(Dataset):
 
         Returns:
             NDVI数组，形状与输入通道相同
-
-        调用函数：
-            _load_sample_data
         """
-
-        # 提取红光和近红外通道
-        red = red.astype(np.float32)  # Red通道
-        nir = nir.astype(np.float32)  # NIR通道
+        # 转换数据类型
+        red = red.astype(np.float32)
+        nir = nir.astype(np.float32)
 
         # 计算NDVI，添加小常数避免除零
         epsilon = 1e-8
@@ -343,15 +278,29 @@ class MultiModalDataset(Dataset):
 def create_train_dataset(
     data_dir: str,
     csv_file: str,
-    exclude_ids_file: str = None,
     transform: Callable = None,
     channel_config: Optional[Dict] = None,
-    usage_mode: str = "optical_only",
-    # 🔧 新增：跨目录映射支持
+    usage_mode: str = "full_multimodal",
     cross_directory_mapping: Optional[Dict[str, str]] = None,
 ) -> MultiModalDataset:
-    """创建训练数据集 - 支持跨目录映射"""
+    """
+    创建训练数据集（简化版）
 
+    简化说明：
+    - 移除了 exclude_ids_file 参数
+    - 假设 csv_file 已经是清洁的数据
+
+    Args:
+        data_dir: 数据目录
+        csv_file: 清洁的CSV文件路径
+        transform: 数据变换函数
+        channel_config: 通道配置
+        usage_mode: 使用模式
+        cross_directory_mapping: 跨目录映射
+
+    Returns:
+        MultiModalDataset: 训练数据集实例
+    """
     # 验证usage_mode的有效性
     valid_modes = channel_config.get("usage_modes", {}).keys()
     if usage_mode not in valid_modes:
@@ -361,13 +310,11 @@ def create_train_dataset(
     return MultiModalDataset(
         data_dir=data_dir,
         csv_file=csv_file,
-        exclude_ids_file=exclude_ids_file,
         transform=transform,
         compute_ndvi=True,
         cache_data=True,
         channel_config=channel_config,
         usage_mode=usage_mode,
-        # 🔧 传递跨目录映射
         cross_directory_mapping=cross_directory_mapping,
     )
 
@@ -379,11 +326,22 @@ def create_test_dataset(
     channel_config: Optional[Dict] = None,
     usage_mode: str = "optical_only",
 ) -> MultiModalDataset:
-    """创建测试数据集"""
+    """
+    创建测试数据集（简化版）
+
+    Args:
+        data_dir: 数据目录
+        csv_file: CSV文件路径
+        transform: 数据变换函数
+        channel_config: 通道配置
+        usage_mode: 使用模式
+
+    Returns:
+        MultiModalDataset: 测试数据集实例
+    """
     return MultiModalDataset(
         data_dir=data_dir,
         csv_file=csv_file,
-        exclude_ids_file=None,
         transform=transform,
         compute_ndvi=True,
         cache_data=True,

@@ -23,9 +23,9 @@ from pathlib import Path
 import torch
 from sklearn.model_selection import train_test_split
 import numpy as np
+import json
 
 from .multimodal_dataset import MultiModalDataset, create_train_dataset, create_test_dataset
-from .base import BaseDataModule
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,7 @@ class MultiModalDataModule(pl.LightningDataModule):
         test_data_dir: str,
         train_csv: str,
         test_csv: str,
-        exclude_ids_file: Optional[str] = None,
-        # 🔧 新增：跨目录映射配置
+        # 跨目录映射配置
         cross_directory_mapping: Optional[str] = None,
         # 通道配置
         channel_config: Dict[str, Any] = None,
@@ -81,9 +80,8 @@ class MultiModalDataModule(pl.LightningDataModule):
         Args:
             train_data_dir: 训练数据目录
             test_data_dir: 测试数据目录
-            train_csv: 训练数据标签文件
+            train_csv: 训练数据标签文件（清洁数据）
             test_csv: 测试数据标签文件
-            exclude_ids_file: 需要排除的样本ID文件
             cross_directory_mapping: 跨目录数据路径映射文件 (JSON格式)
             channel_config: 通道配置字典
             active_mode: 当前使用的数据模式
@@ -108,13 +106,12 @@ class MultiModalDataModule(pl.LightningDataModule):
         self.test_data_dir = Path(test_data_dir)
         self.train_csv = Path(train_csv)
         self.test_csv = Path(test_csv)
-        self.exclude_ids_file = exclude_ids_file
 
-        # 🔧 新增：跨目录映射支持
+        # 跨目录映射支持
         self.cross_directory_mapping = cross_directory_mapping
 
         # 通道和模式配置
-        self.channel_config = channel_config or self._get_default_channel_config()
+        self.channel_config = channel_config
         self.active_mode = active_mode
 
         # 数据加载配置
@@ -147,189 +144,183 @@ class MultiModalDataModule(pl.LightningDataModule):
         # 🔧 加载跨目录映射文件
         self._cross_directory_mapping_dict = self._load_cross_directory_mapping()
 
-        logger.info("🔢MultiModalDataModule initialized" + "-" * 100)
+        logger.info("🔢MultiModalDataModule initialized" + "=" * 100)
         logger.info(f"Active mode: {self.active_mode}")
         logger.info(f"Batch size: {self.batch_size}, Workers: {self.num_workers}")
         logger.info(f"Validation split: {self.val_split}")
         if self.cross_directory_mapping:
-            logger.info(f"🎩 Cross-directory mapping: {len(self._cross_directory_mapping_dict)} samples")
-        logger.info("-" * 100)
+            logger.info(f"🔗 Cross-directory mapping: {len(self._cross_directory_mapping_dict)} samples")
+
+        logger.info("=" * 80)
 
     def _load_cross_directory_mapping(self) -> Dict[str, str]:
-        """加载跨目录数据路径映射"""
+        """
+        加载跨目录映射配置（简化版）
+
+        简化说明：
+        - 移除了复杂的错误处理和日志
+        - 专注于核心功能
+
+        Returns:
+            Dict[str, str]: 样本ID到完整路径的映射
+        """
         if not self.cross_directory_mapping:
             return {}
 
         mapping_file = Path(self.cross_directory_mapping)
         if not mapping_file.exists():
-            logger.warning(f"Cross-directory mapping file not found: {mapping_file}")
+            logger.warning(f"⚠️ Cross-directory mapping file not found: {mapping_file}")
             return {}
 
         try:
-            import json
+            with open(mapping_file, "r", encoding="utf-8") as f:
+                mapping_data = json.load(f)
 
-            with open(mapping_file, "r") as f:
-                mapping = json.load(f)
+            logger.info(f"📂 Loaded cross-directory mapping: {len(mapping_data)} entries")
+            return mapping_data
 
-            logger.info(f"📁 Loaded cross-directory mapping: {len(mapping)} samples")
-            return mapping
         except Exception as e:
-            logger.error(f"Failed to load cross-directory mapping: {e}")
+            logger.error(f"❌ Error loading cross-directory mapping: {e}")
             return {}
-
-    def _create_transforms(self, stage: str) -> Optional[Callable]:
-        """
-        根据阶段创建数据变换
-
-        这个方法实现了类似latent-diffusion的数据增强策略，
-        根据训练/测试阶段应用不同的变换。
-
-        Args:
-            stage: 数据阶段 ('train', 'val', 'test')
-
-        Returns:
-            数据变换函数
-        """
-        if stage not in self.augmentation:
-            return None
-
-        # 这里可以根据配置创建具体的数据变换
-        # 例如：随机翻转、旋转、噪声添加等
-        # 具体实现可以参考albumentations或torchvision
-
-        transforms = []
-        stage_config = self.augmentation.get(stage, {})
-
-        # 示例：几何变换
-        if stage_config.get("geometric", {}).get("random_flip", False):
-            # transforms.append(RandomHorizontalFlip())
-            pass
-
-        # 示例：光谱增强
-        if stage_config.get("spectral", {}):
-            # transforms.append(SpectralNoise())
-            pass
-
-        return None  # 暂时返回None，您可以根据需要实现具体变换
-
-    def prepare_data(self) -> None:
-        """
-        数据准备阶段（全局执行一次），检查数据是否都存在
-
-        这个方法遵循Lightning的设计模式，只在主进程中执行一次。
-        主要用于：
-        1. 验证数据文件存在性
-        2. 执行一次性的数据预处理
-        3. 创建必要的目录结构
-        """
-        logger.info("🔍 Preparing data...")
-
-        # 验证数据目录存在
-        if not self.train_data_dir.exists():
-            raise FileNotFoundError(f"Training data directory not found: {self.train_data_dir}")
-        if not self.test_data_dir.exists():
-            raise FileNotFoundError(f"Test data directory not found: {self.test_data_dir}")
-
-        # 验证CSV文件存在
-        if not self.train_csv.exists():
-            raise FileNotFoundError(f"Training CSV not found: {self.train_csv}")
-        if not self.test_csv.exists():
-            raise FileNotFoundError(f"Test CSV not found: {self.test_csv}")
-
-        logger.info("Data preparation completed")
 
     def setup(self, stage: Optional[str] = None) -> None:
         """
         设置数据集（每个进程执行）
 
-        这是数据处理的核心方法。它根据不同的stage创建相应的数据集。
+        这个方法在分布式训练的每个进程中都会被调用。
+        简化后的逻辑更加清晰直接。
+
+        Args:
+            stage: 当前阶段 ('fit', 'validate', 'test', 'predict')
         """
-        logger.info(f"setup:Setting up datasets for stage: {stage}")
+        logger.info(f"🔧 Setting up data for stage: {stage}")
 
         if stage == "fit" or stage is None:
             # 创建完整的训练数据集
             full_dataset = create_train_dataset(
                 data_dir=str(self.train_data_dir),
                 csv_file=str(self.train_csv),
-                exclude_ids_file=self.exclude_ids_file,
-                transform=self._create_transforms("train"),
+                transform=self._create_transforms("train"),  # ✅ 使用原始方法
                 channel_config=self.channel_config,
                 usage_mode=self.active_mode,
-                # 🔧 传递跨目录映射
                 cross_directory_mapping=self._cross_directory_mapping_dict,
             )
 
-            # 分割训练集和验证集
-            if self.val_split > 0:
-                total_size = len(full_dataset)
-                val_size = int(total_size * self.val_split)
-                train_size = total_size - val_size
+            # 数据分割
+            self.train_dataset, self.val_dataset = self._split_dataset(
+                full_dataset,
+                self._create_transforms("train"),  # ✅ 训练变换
+                self._create_transforms("val"),  # ✅ 验证变换
+            )
 
-                if self.stratify and full_dataset.has_labels:
-                    labels = full_dataset.data_index["label"].tolist()
-
-                    # 分层采样：保持类别比例
-                    train_indices, val_indices = train_test_split(
-                        range(len(full_dataset)), test_size=self.val_split, stratify=labels, random_state=self.seed
-                    )
-
-                    self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
-                    self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
-
-                    logger.info(f"Dataset split: Train={len(self.train_dataset)}, Val={len(self.val_dataset)}")
-                else:
-                    self.train_dataset = full_dataset
-                    self.val_dataset = None
-                    logger.info(f"Using full dataset for training: {len(self.train_dataset)} samples")
+            logger.info(f"✅ Train dataset: {len(self.train_dataset)} samples")
+            logger.info(f"✅ Val dataset: {len(self.val_dataset)} samples")
 
         if stage == "test" or stage is None:
             # 创建测试数据集
             self.test_dataset = create_test_dataset(
                 data_dir=str(self.test_data_dir),
                 csv_file=str(self.test_csv),
-                transform=self._create_transforms("test"),
+                transform=self._create_transforms("test"),  # ✅ 使用原始方法
                 channel_config=self.channel_config,
                 usage_mode=self.active_mode,
             )
-            logger.info(f"Test dataset: {len(self.test_dataset)} samples")
 
-        logger.info("-" * 100)
+            logger.info(f"✅ Test dataset: {len(self.test_dataset)} samples")
+
+        if stage == "predict":
+            # 预测阶段使用测试数据集
+            if self.test_dataset is None:
+                self.test_dataset = create_test_dataset(
+                    data_dir=str(self.test_data_dir),
+                    csv_file=str(self.test_csv),
+                    transform=self._create_transforms("test"),  # ✅ 使用原始方法
+                    channel_config=self.channel_config,
+                    usage_mode=self.active_mode,
+                )
+
+    def _create_transforms(self, stage: str) -> Optional[Callable]:
+        """
+        根据阶段创建数据变换（保持原始实现）
+
+        Args:
+            stage: 数据阶段 ('train', 'val', 'test')
+
+        Returns:
+            数据变换函数，如果没有配置则返回None
+        """
+        if stage not in self.augmentation:
+            return None
+
+        # 🔧 这里保持原始的简单实现
+        # 如果需要复杂变换，可以后续扩展
+        stage_config = self.augmentation.get(stage, {})
+
+        # 目前返回None，让数据集类处理原始数据
+        # 这是最简单、最稳定的方案
+        return None
+
+    def _split_dataset(self, full_dataset, train_transform, val_transform):
+        """
+        分割数据集为训练集和验证集
+
+        Args:
+            full_dataset: 完整数据集
+            train_transform: 训练数据变换
+            val_transform: 验证数据变换
+
+        Returns:
+            Tuple: (训练数据集, 验证数据集)
+        """
+        # 获取数据索引
+        total_size = len(full_dataset)
+        val_size = int(self.val_split * total_size)
+        train_size = total_size - val_size
+
+        # 分层划分（如果启用）
+        if self.stratify and full_dataset.has_labels:
+            # 基于标签进行分层划分
+            labels = [full_dataset.data_index.iloc[i]["label"] for i in range(total_size)]
+            train_indices, val_indices = train_test_split(
+                range(total_size), test_size=self.val_split, stratify=labels, random_state=self.seed
+            )
+        else:
+            # 随机划分
+            torch.manual_seed(self.seed)
+            train_indices, val_indices = random_split(range(total_size), [train_size, val_size])
+            train_indices = train_indices.indices
+            val_indices = val_indices.indices
+
+        # 创建训练和验证数据集
+        train_dataset = DatasetSubset(full_dataset, train_indices, train_transform)
+        val_dataset = DatasetSubset(full_dataset, val_indices, val_transform)
+
+        return train_dataset, val_dataset
 
     def train_dataloader(self) -> DataLoader:
         """创建训练数据加载器"""
-        if self.train_dataset is None:
-            raise RuntimeError("Training dataset not initialized. Call setup('fit') first.")
-
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle_train,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            drop_last=False,  # 训练时丢弃最后一个不完整的批次
-            persistent_workers=self.num_workers > 0,  # 保持工作进程活跃
+            drop_last=False,
         )
 
-    def val_dataloader(self) -> Optional[DataLoader]:
+    def val_dataloader(self) -> DataLoader:
         """创建验证数据加载器"""
-        if self.val_dataset is None:
-            return None
-
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            drop_last=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
+            drop_last=False,
         )
 
-    def test_dataloader(self) -> Optional[DataLoader]:
+    def test_dataloader(self) -> DataLoader:
         """创建测试数据加载器"""
-        if self.test_dataset is None:
-            return None
-
         return DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
@@ -337,19 +328,50 @@ class MultiModalDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             drop_last=False,
-            persistent_workers=self.num_workers > 0,
         )
 
-    def predict_dataloader(self) -> Optional[DataLoader]:
+    def predict_dataloader(self) -> DataLoader:
         """创建预测数据加载器"""
         return self.test_dataloader()
 
-    def get_data_info(self) -> Dict[str, Any]:
-        """获取数据模块信息"""
-        return {
-            "data_stats": self._data_stats,
-            "channel_config": self.channel_config,
-            "active_mode": self.active_mode,
-            "batch_size": self.batch_size,
-            "num_workers": self.num_workers,
-        }
+    def _get_test_transforms(self):
+        """获取测试数据变换"""
+        from .transforms import get_test_transforms
+
+        return get_test_transforms(self.augmentation.get("test", {}))
+
+
+class DatasetSubset:
+    """
+    数据集子集包装器
+
+    用于将完整数据集分割为训练/验证子集，
+    并为每个子集应用不同的数据变换。
+    """
+
+    def __init__(self, dataset, indices, transform=None):
+        """
+        初始化数据集子集
+
+        Args:
+            dataset: 原始数据集
+            indices: 子集索引列表
+            transform: 数据变换函数
+        """
+        self.dataset = dataset
+        self.indices = indices
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        # 获取原始数据
+        original_idx = self.indices[idx]
+        image, label = self.dataset[original_idx]
+
+        # 应用变换
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label

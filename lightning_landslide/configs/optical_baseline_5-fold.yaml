@@ -1,26 +1,24 @@
 experiment_name: "optical_swin_tiny_0728_5-fold"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
-version: "1.0.0"
-tags: ["optical", "baseline", "swin", "binary_classification"]
+version: "2.0.0"
 
-# 研究人员信息（便于团队协作）
+# 研究人员信息
 author: "MM-LandslideNet Team"
-created_date: "2024-01-15"
+created_date: "2025-08-01"
 notes: |
   This experiment serves as the optical baseline for our multi-modal landslide detection project.
   It uses only optical channels (R,G,B,NIR,NDVI) with a Swin Transformer Tiny backbone.
   Expected to achieve ~80% F1 score based on preliminary experiments.
 
 # === 全局设置 ===
-seed: 3407                    # 随机种子，确保实验可重现
-log_level: "INFO"           # 日志级别：DEBUG/INFO/WARNING/ERROR
+seed: 3407
+log_level: "INFO"
 
 # === 模型配置 ===
-# 这里我们引用了之前定义的模型配置，并做了实验特定的调整
+# 与简化基线保持完全一致
 model:
   target: lightning_landslide.src.models.LandslideClassificationModule
   params:
-    # 基础模型：Swin Transformer
     base_model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
@@ -30,18 +28,13 @@ model:
         dropout_rate: 0.2
         pretrained_path: null
         img_size: 256
-        # num_classes: 1
-        # freeze_backbone: false
     
-    # === 分类头配置 ===
-    # 定义从特征到最终预测的映射
     classifier_config:
       type: "simple"              # 分类头类型：simple/mlp/attention
       hidden_dim: null            # MLP分类头的隐藏维度（simple类型时忽略）
       use_batch_norm: false       # 是否使用批标准化
       activation: "relu"          # 分类头中的激活函数
 
-    # 损失函数：使用Focal Loss处理类别不平衡
     loss_config:
       type: "focal"
       focal_params: {alpha: 0.25, gamma: 2.0} # 或者0.25，需要实验？
@@ -76,7 +69,6 @@ data:
     test_data_dir: "dataset/test_data"
     train_csv: "dataset/Train.csv"
     test_csv: "dataset/Test.csv"
-    exclude_ids_file: "dataset/data_check/exclude_ids.json"
 
     # === 通道配置 ===
     # 定义多模态数据的通道使用策略
@@ -152,13 +144,36 @@ data:
       val: {resize: 256}
       test: {resize: 256}
 
+kfold:
+  # 基本K折参数
+  n_splits: 5                          # 折数
+  stratified: true                     # 分层K折（保持类别平衡）
+  primary_metric: "f1"                 # 主要评估指标
+  
+  # 保存和输出设置
+  save_fold_models: true               # 保存每折的最佳模型
+  save_oof_predictions: true           # 保存Out-of-Fold预测
+  save_fold_predictions: true          # 保存每折的预测结果
+  
+  # 聚合和分析设置
+  compute_ensemble: true               # 计算模型集成结果
+  generate_cv_report: true             # 生成交叉验证报告
+  plot_fold_metrics: true              # 绘制各折指标图表
+  
+  # 高级设置
+  early_stop_patience: 15              # K折训练的早停耐心值
+  fold_seed_offset: 3407                 # 每折随机种子偏移量
+  
+
 # === 训练器配置 ===
-# PyTorch Lightning Trainer的配置
+# 针对K折交叉验证优化
 trainer:
   target: pytorch_lightning.Trainer
   params:
     # 基础训练配置
     max_epochs: 100
+    
+    # 硬件配置
     accelerator: "gpu"         # 使用GPU
     devices: 1                 # 使用1个GPU
     precision: "32-true"       # 使用32位精度，不使用混合精度
@@ -172,9 +187,9 @@ trainer:
     accumulate_grad_batches: 1  # 梯度累积
     
     # 性能优化
-    enable_progress_bar: true   # 显示进度条
-    enable_model_summary: true  # 显示模型摘要
-    deterministic: false        # 为了性能，不要求完全确定性
+    enable_progress_bar: true    # 显示进度条
+    enable_model_summary: false  # 显示模型摘要
+    deterministic: false         # 为了性能，不要求完全确定性
 
 # === 回调函数配置 ===
 # 定义训练过程中的监控、保存和控制策略
@@ -183,7 +198,7 @@ callbacks:
   model_checkpoint:
     target: pytorch_lightning.callbacks.ModelCheckpoint
     params:
-      filename: "best-{epoch:02d}-{val_f1:.4f}"
+      filename: "fold_{fold}_best-{epoch:02d}-{val_f1:.4f}"
       monitor: "val_f1"         # 监控指标
       mode: "max"               # 最大值
       save_top_k: 1              # 保存最好的1个模型
@@ -197,7 +212,7 @@ callbacks:
       monitor: "val_f1"         # 监控指标
       mode: "max"               # 最大值
       patience: 20              # 早停次数
-      verbose: true              # 显示详细信息
+      verbose: false              # 显示详细信息
       strict: false              # 非严格模式，允许指标偶尔不存在
       min_delta: 0.001
   
@@ -215,12 +230,6 @@ callbacks:
       summary_interval: 5  # 每5个epoch打印详细总结
       save_history: true   # 保存完整历史
 
-kfold:
-  n_splits: 5                    # 折数
-  stratified: true               # 是否分层抽样
-  primary_metric: "f1"           # 主要评估指标
-  save_oof_predictions: true     # 是否保存OOF（Out-of-Fold）预测
-  save_fold_models: true         # 是否保存每折的模型
 
 # === 日志记录器配置 ===
 # 定义实验追踪和可视化方式
@@ -245,17 +254,21 @@ loggers:
 # === 输出目录配置 ===
 # 定义所有输出文件的保存位置
 outputs:
-  base_output_dir: "lightning_landslide/exp"
+  base_dir: "lightning_landslide/exp"
+  experiment_dir: "lightning_landslide/exp/${experiment_name}"
+  checkpoints_dir: "${outputs.experiment_dir}/checkpoints"
+  logs_dir: "${outputs.experiment_dir}/logs"
+  predictions_dir: "${outputs.experiment_dir}/predictions"
+  kfold_results_dir: "${outputs.experiment_dir}/kfold_results"  # K折专用输出目录
+  
+  # K折保存设置
+  save_config: true
+  save_predictions: true
+  save_model_summary: false            # K折时不保存模型摘要
+  save_fold_metrics: true              # 保存各折详细指标
+  save_cv_summary: true                # 保存交叉验证摘要
 
-  # 路径会保存到experiment_name
-  checkpoint_subdir: "checkpoints"
-  log_subdir: "log"
-  predictions_subdir: "predictions"
-
-  # result_prefix: "optical_swin_tiny_baseline"
-  # timestamp_format: "%Y%m%d_%H%M%S"
-
-# === 硬件和性能配置 ===
+# === 计算配置 ===
 compute:
   # GPU配置
   gpu_ids: [0]                  # 使用的GPU列表
@@ -265,8 +278,6 @@ compute:
   find_unused_parameters: false # DDP时是否查找未使用参数
   sync_batchnorm: true          # 是否同步批标准化
 
-  # 性能监控
-  profiler: null                # 性能分析器：null/simple/advanced/pytorch
   
 # === 实验特定配置 ===
 # 这个实验的特殊设置和超参数
@@ -288,21 +299,6 @@ experiment_config:
     save_predictions: true           # 保存预测结果
     save_model_summary: true         # 保存模型摘要
 
-# === 调试和开发配置 ===
-# 开发和调试时的特殊设置
-debug:
-  # 快速开发模式
-  fast_dev_run: false           # 只运行几个batch进行调试
-  overfit_batches: 0.0          # 过拟合特定batch数量（调试用）
-  
-  # 数据验证
-  validate_data_on_start: true  # 训练前验证数据完整性
-  
-  # 模型验证
-  run_model_test: false         # 运行模型的单元测试
-  
-  # 性能分析
-  profile_model: false          # 对模型进行性能分析
   
 # === 实验记录 ===
 # 便于后续分析和比较的实验记录

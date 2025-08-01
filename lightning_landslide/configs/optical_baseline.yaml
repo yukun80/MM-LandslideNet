@@ -7,14 +7,14 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "optical_swin_tiny_0724"
+experiment_name: "multimodal_swin_tiny_0801"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
-version: "1.0.0"
-tags: ["optical", "baseline", "swin", "binary_classification"]
+version: "2.0.0"
 
-# 研究人员信息（便于团队协作）
+# 研究人员信息
 author: "MM-LandslideNet Team"
 created_date: "2024-01-15"
+updated_date: "2024-08-01"
 notes: |
   This experiment serves as the optical baseline for our multi-modal landslide detection project.
   It uses only optical channels (R,G,B,NIR,NDVI) with a Swin Transformer Tiny backbone.
@@ -25,7 +25,7 @@ seed: 3407                    # 随机种子，确保实验可重现
 log_level: "INFO"           # 日志级别：DEBUG/INFO/WARNING/ERROR
 
 # === 模型配置 ===
-# 这里我们引用了之前定义的模型配置，并做了实验特定的调整
+# 保持与原始基线完全相同的模型配置
 model:
   target: lightning_landslide.src.models.LandslideClassificationModule
   params:
@@ -34,13 +34,11 @@ model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
         model_name: "swinv2_tiny_window16_256"
-        input_channels: 5
+        input_channels: 13
         pretrained: true
         dropout_rate: 0.2
         pretrained_path: null
         img_size: 256
-        # num_classes: 1
-        # freeze_backbone: false
     
     # === 分类头配置 ===
     # 定义从特征到最终预测的映射
@@ -85,7 +83,6 @@ data:
     test_data_dir: "dataset/test_data"
     train_csv: "dataset/Train.csv"
     test_csv: "dataset/Test.csv"
-    exclude_ids_file: "dataset/data_check/exclude_ids.json"
 
     # === 通道配置 ===
     # 定义多模态数据的通道使用策略
@@ -98,27 +95,27 @@ data:
 
       # === 使用模式定义 - 为不同的实验提供预设的通道组合 ===
       usage_modes:
-        optical_only:
-          groups: ["optical", "derived"]
-          description: "仅使用光学数据，适合基线实验"
+        # optical_only:
+        #   groups: ["optical", "derived"]
+        #   description: "仅使用光学数据，适合基线实验"
         
-        # full_multimodal:
-        #   groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
-        #   description: "使用全部模态，适合最终模型"
+        full_multimodal:
+          groups: ["optical", "derived", "sar_amplitude", "sar_difference"]  
+          description: "使用全部模态，适合最终模型"
         
         # sar_focused:
         #   groups: ["sar_amplitude", "sar_difference"]
         #   description: "专注SAR数据，用于消融实验"
 
     # 通道配置：仅使用光学数据
-    active_mode: "optical_only"
+    active_mode: "full_multimodal"
     
     # 数据加载配置
-    batch_size: 16
+    batch_size: 32
     num_workers: 8
     pin_memory: true
     
-    # 数据分割
+    # 数据分割配置
     val_split: 0.2
     stratify: true
     shuffle_train: true
@@ -135,13 +132,12 @@ data:
       
       # NDVI计算配置
       ndvi_computation:
-        red_channel_idx: 0      # 红光通道索引
-        nir_channel_idx: 3      # 近红外通道索引
-        epsilon: 1e-8           # 避免除零的小值
-        clip_range: [-1, 1]     # NDVI值裁剪范围
+        red_channel_idx: 0
+        nir_channel_idx: 3
+        epsilon: 1e-8
+        clip_range: [-1, 1]
 
-    # === 数据增强配置 ===
-    # 数据增强：适度的增强策略
+    # 数据增强配置
     augmentation:
       train:
         resize: 256
@@ -166,7 +162,6 @@ data:
 trainer:
   target: pytorch_lightning.Trainer
   params:
-    # 基础训练配置
     max_epochs: 100
     accelerator: "gpu"         # 使用GPU
     devices: 1                 # 使用1个GPU
@@ -188,10 +183,11 @@ trainer:
 # === 回调函数配置 ===
 # 定义训练过程中的监控、保存和控制策略
 callbacks:
-  # 模型检查点：保存最好的模型
+  # 模型检查点
   model_checkpoint:
     target: pytorch_lightning.callbacks.ModelCheckpoint
     params:
+      dirpath: "lightning_landslide/exp/${experiment_name}/checkpoints"  # ✅ 使用实验名称路径
       filename: "best-{epoch:02d}-{val_f1:.4f}"
       monitor: "val_f1"         # 监控指标
       mode: "max"               # 最大值
@@ -224,40 +220,33 @@ callbacks:
       summary_interval: 5  # 每5个epoch打印详细总结
       save_history: true   # 保存完整历史
 
-# === 日志记录器配置 ===
-# 定义实验追踪和可视化方式
-loggers:
-  # TensorBoard：本地可视化
-  tensorboard:
-    target: pytorch_lightning.loggers.TensorBoardLogger
-    params:
-      log_graph: false           # 记录计算图
-      default_hp_metric: true   # 记录默认超参数指标
-      name: ""                  # 🔧 关键修复：设置为空字符串，避免创建lightning_logs目录
-      version: ""               # 🔧 关键修复：设置为空字符串，避免创建version_X目录
-  
-  # 可选：添加W&B日志记录器（如果需要在线追踪）
-  # wandb:
-  #   target: pytorch_lightning.loggers.WandbLogger
-  #   params:
-  #     project: "mm-landslide-net"  # 项目名称
-  #     name: "optical_swin_tiny_baseline"  # 实验名称
-  #     tags: ["optical", "baseline", "swin"]  # 标签
+# === 日志记录器配置（修复版）===
+# 🔧 关键修复：使用实验名称作为目录名
+logger:
+  target: pytorch_lightning.loggers.TensorBoardLogger
+  params:
+    save_dir: "lightning_landslide/exp"           # ✅ 基础目录
+    name: "${experiment_name}"                    # ✅ 使用实验名称作为子目录名
+    version: ""                                   # ✅ 不使用version编号
+    log_graph: false
+    default_hp_metric: false
 
 # === 输出目录配置 ===
 # 定义所有输出文件的保存位置
 outputs:
-  base_output_dir: "lightning_landslide/exp"
+  base_dir: "lightning_landslide/exp"
+  experiment_dir: "lightning_landslide/exp/${experiment_name}"
+  checkpoints_dir: "${outputs.experiment_dir}/checkpoints"
+  logs_dir: "${outputs.experiment_dir}/logs"
+  predictions_dir: "${outputs.experiment_dir}/predictions"
 
-  # 路径会保存到experiment_name
-  checkpoint_subdir: "checkpoints"
-  log_subdir: "log"
-  predictions_subdir: "predictions"
+# 💾 保存设置配置（独立section）
+save_settings:
+  save_config: true
+  save_predictions: true
+  save_model_summary: true
 
-  # result_prefix: "optical_swin_tiny_baseline"
-  # timestamp_format: "%Y%m%d_%H%M%S"
-
-# === 硬件和性能配置 ===
+# === 计算配置 ===
 compute:
   # GPU配置
   gpu_ids: [0]                  # 使用的GPU列表
@@ -282,38 +271,3 @@ experiment_config:
     tta_augmentations: 4                # TTA增强次数
     confidence_threshold: 0.5           # 预测置信度阈值
   
-  # 结果报告配置
-  reporting:
-    generate_confusion_matrix: true  # 生成混淆矩阵
-    generate_roc_curve: true         # 生成ROC曲线
-    generate_precision_recall_curve: true  # 生成精确率-召回率曲线
-    save_predictions: true           # 保存预测结果
-    save_model_summary: true         # 保存模型摘要
-
-# === 调试和开发配置 ===
-# 开发和调试时的特殊设置
-debug:
-  # 快速开发模式
-  fast_dev_run: false           # 只运行几个batch进行调试
-  overfit_batches: 0.0          # 过拟合特定batch数量（调试用）
-  
-  # 数据验证
-  validate_data_on_start: true  # 训练前验证数据完整性
-  
-  # 模型验证
-  run_model_test: false         # 运行模型的单元测试
-  
-  # 性能分析
-  profile_model: false          # 对模型进行性能分析
-  
-# === 实验记录 ===
-# 便于后续分析和比较的实验记录
-experiment_log:
-  expected_metrics:
-    val_f1: 0.90                # 预期的F1分数
-    val_accuracy: 0.85          # 预期的准确率
-    training_time_hours: 1.0    # 预期的训练时间
-  
-  baseline_comparison:
-    previous_best_f1: 0.85      # 之前最好的F1分数
-    improvement_target: 0.05    # 目标改进幅度

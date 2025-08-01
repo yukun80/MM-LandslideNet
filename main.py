@@ -172,13 +172,31 @@ class ExperimentRunner:
         datamodule = instantiate_from_config(self.config.data)
         trainer = instantiate_from_config(self.config.trainer)
 
-        # 添加回调函数
+        # 设置回调
         if "callbacks" in self.config:
             callbacks = []
-            for callback_name, callback_config in self.config.callbacks.items():
-                callback = instantiate_from_config(callback_config)
-                callbacks.append(callback)
-            trainer.callbacks.extend(callbacks)
+            for cb_name, cb_config in self.config.callbacks.items():
+                # 🔧 动态替换ModelCheckpoint中的路径
+                if cb_name == "model_checkpoint" and "dirpath" in cb_config.params:
+                    # 替换实验名称变量
+                    dirpath = cb_config.params.dirpath
+                    if "${experiment_name}" in dirpath:
+                        experiment_name = self.config.get("experiment_name", "default_exp")
+                        cb_config.params.dirpath = dirpath.replace("${experiment_name}", experiment_name)
+
+                callbacks.append(instantiate_from_config(cb_config))
+            trainer.callbacks = callbacks
+
+        # 🔧 动态设置Logger路径
+        if "logger" in self.config:
+            logger_config = self.config.logger.copy()  # 复制配置避免修改原始配置
+
+            # 替换实验名称变量
+            if "name" in logger_config.params and "${experiment_name}" in str(logger_config.params.name):
+                experiment_name = self.config.get("experiment_name", "default_exp")
+                logger_config.params.name = logger_config.params.name.replace("${experiment_name}", experiment_name)
+
+            trainer.logger = instantiate_from_config(logger_config)
 
         # 训练模型
         trainer.fit(model, datamodule)

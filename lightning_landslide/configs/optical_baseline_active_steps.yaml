@@ -9,11 +9,11 @@
 experiment_name: "optical_swin_tiny_0731_active_steps"
 description: "Stepwise active learning based on successful optical_swin_tiny_0724 baseline"
 version: "2.0.0"
-tags: ["optical", "active_learning", "stepwise", "swin", "binary_classification"]
 
 # 研究人员信息
 author: "MM-LandslideNet Team"
 created_date: "2024-07-31"
+updated_date: "2024-08-01"  # 简化更新日期
 notes: |
   分步主动学习实验，基于成功的 optical_swin_tiny_0724 基线模型。
   支持以下命令：
@@ -23,16 +23,14 @@ notes: |
   4. python main.py retrain config.yaml                  # 模型fine-tuning
 
 # === 全局设置 ===
-# 与baseline保持完全一致
 seed: 3407
 log_level: "INFO"
 
 # === 模型配置 ===
-# 与 optical_swin_tiny_0724 完全一致
+# 与简化基线保持完全一致
 model:
   target: lightning_landslide.src.models.classification_module.LandslideClassificationModule
   params:
-    # 基础模型：Swin Transformer - 与baseline一致
     base_model:
       target: lightning_landslide.src.models.optical_swin.OpticalSwinModel
       params:
@@ -85,7 +83,6 @@ data:
     test_data_dir: "dataset/test_data"
     train_csv: "dataset/Train.csv"
     test_csv: "dataset/Test.csv"
-    exclude_ids_file: "dataset/data_check/exclude_ids.json"
 
     # 通道配置 - 与baseline一致
     channel_config:
@@ -120,7 +117,7 @@ data:
         means: [1849.282, 1953.906, 1896.493, 3291.47, -9.624, -17.110, 
                 -0.699, -0.483, -10.671, -18.442, 0.248, -0.234]
         stds: [1414.462, 1338.292, 1342.528, 1448.362, 7.904, 9.245, 
-              4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
+               4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
       
       # NDVI计算配置 - 与baseline一致
       ndvi_computation:
@@ -197,27 +194,27 @@ active_pseudo_learning:
       n_init: 10                        # K-means初始化次数
 
 # === 训练器配置 ===
-# 主要用于重训练步骤，基础训练配置与baseline一致
+# 主要用于重训练步骤
 trainer:
   target: pytorch_lightning.Trainer
   params:
     # 基础训练配置（用于步骤1，已完成）
     max_epochs: 100                 # 基础训练epoch数
     
-    # 硬件配置 - 与baseline一致
+    # 硬件配置
     accelerator: "gpu"
     devices: 1
     precision: "32-true"
     
-    # 验证配置 - 与baseline一致
+    # 验证配置
     val_check_interval: 1.0
     check_val_every_n_epoch: 1
     
-    # 梯度配置 - 与baseline一致
+    # 梯度配置
     gradient_clip_val: 1.0
     accumulate_grad_batches: 1
     
-    # 进度和日志配置 - 与baseline一致
+    # 进度和日志配置
     enable_progress_bar: true
     enable_model_summary: true
     deterministic: false
@@ -236,7 +233,7 @@ callbacks:
       save_last: true
       verbose: true
   
-  # 早停 - 与baseline一致
+  # 早停
   early_stopping:
     target: pytorch_lightning.callbacks.EarlyStopping
     params:
@@ -247,14 +244,14 @@ callbacks:
       strict: false
       min_delta: 0.001
   
-  # 学习率监控 - 与baseline一致
+  # 学习率监控
   lr_monitor:
     target: pytorch_lightning.callbacks.LearningRateMonitor
     params:
       logging_interval: "epoch"
       log_momentum: false
   
-  # 自定义回调 - 与baseline一致
+  # 自定义回调
   metrics_logger:
     target: lightning_landslide.src.utils.metrics.MetricsLogger
     params:
@@ -268,30 +265,37 @@ loggers:
   tensorboard:
     target: pytorch_lightning.loggers.TensorBoardLogger
     params:
-      log_graph: false
-      default_hp_metric: true
-      name: ""
+      save_dir: "lightning_landslide/exp"
+      name: null
       version: ""
+      log_graph: false
+      default_hp_metric: false
 
-# === 输出目录配置 ===
-# 新的实验目录，与baseline分开
+# === 输出配置 ===
 outputs:
-  experiment_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps"
-  log_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/logs"
-  model_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/models"
-  checkpoint_dir: "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/checkpoints"
+  base_dir: "lightning_landslide/exp"
+  experiment_dir: "lightning_landslide/exp/${experiment_name}"
+  checkpoints_dir: "${outputs.experiment_dir}/checkpoints"
+  logs_dir: "${outputs.experiment_dir}/logs"
+  predictions_dir: "${outputs.experiment_dir}/predictions"
+  active_learning_dir: "${outputs.experiment_dir}/active_learning"  # 主动学习专用目录
+  
+  # 主动学习保存设置
+  save_config: true
+  save_predictions: true
+  save_model_summary: true
+  save_uncertainty_scores: true        # 保存不确定性分数
+  save_selection_history: true         # 保存选择历史
+  save_annotation_results: true        # 保存标注结果
 
-# === 硬件和性能配置 ===
-# 与baseline保持一致
+# === 计算配置 ===
 compute:
-  gpu_ids: [0]
   mixed_precision: false
+  compile_model: true
   find_unused_parameters: false
   sync_batchnorm: true
-  profiler: null
 
 # === 实验特定配置 ===
-# 与baseline保持一致
 experiment_config:
   class_balance_strategy: "focal_loss"
   
@@ -306,27 +310,3 @@ experiment_config:
     generate_precision_recall_curve: true
     save_predictions: true
     save_model_summary: true
-
-# === 调试和开发配置 ===
-# 与baseline保持一致
-debug:
-  fast_dev_run: false
-  overfit_batches: 0.0
-  validate_data_on_start: true
-  run_model_test: false
-  profile_model: false
-
-# === 实验记录 ===
-experiment_log:
-  base_experiment: "optical_swin_tiny_0724"  # 基础实验名称
-  base_checkpoint: "lightning_landslide/exp/optical_swin_tiny_0724/checkpoints/best-epoch=45-val_f1=0.8595.ckpt"
-  
-  expected_metrics:
-    baseline_f1: 0.8595             # 基线F1分数（从您的例子）
-    target_f1: 0.88                 # 主动学习目标F1分数
-    improvement_target: 0.02        # 预期改进
-    
-  active_learning_plan:
-    iterations: 5                   # 计划迭代次数
-    annotation_budget_total: 250    # 总标注预算
-    expected_time_per_iteration: 30 # 每轮预期时间（分钟）
