@@ -24,6 +24,7 @@ import torch
 from sklearn.model_selection import train_test_split
 import numpy as np
 import json
+import pandas as pd
 
 from .multimodal_dataset import MultiModalDataset, create_train_dataset, create_test_dataset
 
@@ -262,7 +263,12 @@ class MultiModalDataModule(pl.LightningDataModule):
 
     def _split_dataset(self, full_dataset, train_transform, val_transform):
         """
-        分割数据集为训练集和验证集
+        分割数据集为训练集和验证集，并生成CSV分割文件
+
+        🔧 增强功能：
+        - 保持原有的分层划分逻辑
+        - 新增：生成 train_split.csv 和 val_split.csv
+        - 新增：支持主动学习时修改训练集
 
         Args:
             full_dataset: 完整数据集
@@ -277,25 +283,172 @@ class MultiModalDataModule(pl.LightningDataModule):
         val_size = int(self.val_split * total_size)
         train_size = total_size - val_size
 
+        # 🔧 检查是否已存在分割文件（用于主动学习）
+        train_split_file = self.train_csv.parent / "train_split.csv"
+        val_split_file = self.train_csv.parent / "val_split.csv"
+
+        if train_split_file.exists() and val_split_file.exists():
+            logger.info("🔄 Found existing train/val split files, loading...")
+            train_indices, val_indices = self._load_existing_splits(full_dataset, train_split_file, val_split_file)
+        else:
+            logger.info("🆕 Creating new train/val split...")
+            train_indices, val_indices = self._create_new_splits(full_dataset, total_size)
+            # 保存分割结果
+            self._save_splits(full_dataset, train_indices, val_indices, train_split_file, val_split_file)
+
+        # 创建训练和验证数据集
+        train_dataset = DatasetSubset(full_dataset, train_indices, train_transform)
+        val_dataset = DatasetSubset(full_dataset, val_indices, val_transform)
+
+        # 打印分割统计信息
+        self._print_split_statistics(full_dataset, train_indices, val_indices)
+
+        return train_dataset, val_dataset
+
+    def _create_new_splits(self, full_dataset, total_size):
+        """
+        创建新的数据分割
+
+        Args:
+            full_dataset: 完整数据集
+            total_size: 总样本数
+
+        Returns:
+            Tuple: (训练索引, 验证索引)
+        """
+        val_size = int(self.val_split * total_size)
+        train_size = total_size - val_size
+
         # 分层划分（如果启用）
         if self.stratify and full_dataset.has_labels:
             # 基于标签进行分层划分
             labels = [full_dataset.data_index.iloc[i]["label"] for i in range(total_size)]
             train_indices, val_indices = train_test_split(
-                range(total_size), test_size=self.val_split, stratify=labels, random_state=self.seed
+                range(total_size),
+                test_size=self.val_split,
+                stratify=labels,
+                random_state=self.seed,
             )
+            logger.info(f"✅ Used stratified split with seed {self.seed}")
         else:
             # 随机划分
             torch.manual_seed(self.seed)
             train_indices, val_indices = random_split(range(total_size), [train_size, val_size])
             train_indices = train_indices.indices
             val_indices = val_indices.indices
+            logger.info(f"✅ Used random split with seed {self.seed}")
 
-        # 创建训练和验证数据集
-        train_dataset = DatasetSubset(full_dataset, train_indices, train_transform)
-        val_dataset = DatasetSubset(full_dataset, val_indices, val_transform)
+        return train_indices, val_indices
 
-        return train_dataset, val_dataset
+    def _save_splits(self, full_dataset, train_indices, val_indices, train_split_file, val_split_file):
+        """
+        保存数据分割到CSV文件
+
+        Args:
+            full_dataset: 完整数据集
+            train_indices: 训练集索引
+            val_indices: 验证集索引
+            train_split_file: 训练分割文件路径
+            val_split_file: 验证分割文件路径
+        """
+        import pandas as pd
+
+        # 创建训练集CSV
+        train_data = []
+        for idx in train_indices:
+            row = full_dataset.data_index.iloc[idx].copy()
+            train_data.append(row)
+
+        train_df = pd.DataFrame(train_data)
+        train_df.to_csv(train_split_file, index=False)
+
+        # 创建验证集CSV
+        val_data = []
+        for idx in val_indices:
+            row = full_dataset.data_index.iloc[idx].copy()
+            val_data.append(row)
+
+        val_df = pd.DataFrame(val_data)
+        val_df.to_csv(val_split_file, index=False)
+
+        logger.info(f"💾 Saved train split: {train_split_file} ({len(train_df)} samples)")
+        logger.info(f"💾 Saved val split: {val_split_file} ({len(val_df)} samples)")
+
+    def _load_existing_splits(self, full_dataset, train_split_file, val_split_file):
+        """
+        从现有CSV文件加载数据分割
+
+        Args:
+            full_dataset: 完整数据集
+            train_split_file: 训练分割文件路径
+            val_split_file: 验证分割文件路径
+
+        Returns:
+            Tuple: (训练索引, 验证索引)
+        """
+        import pandas as pd
+
+        # 读取分割文件
+        train_split_df = pd.read_csv(train_split_file)
+        val_split_df = pd.read_csv(val_split_file)
+
+        # 获取ID列表
+        train_ids = set(train_split_df["ID"].tolist())
+        val_ids = set(val_split_df["ID"].tolist())
+
+        # 在完整数据集中找到对应的索引
+        train_indices = []
+        val_indices = []
+
+        for idx in range(len(full_dataset)):
+            sample_id = full_dataset.data_index.iloc[idx]["ID"]
+            if sample_id in train_ids:
+                train_indices.append(idx)
+            elif sample_id in val_ids:
+                val_indices.append(idx)
+
+        logger.info(f"📂 Loaded existing splits: {len(train_indices)} train, {len(val_indices)} val")
+        return train_indices, val_indices
+
+    def _print_split_statistics(self, full_dataset, train_indices, val_indices):
+        """
+        打印数据分割统计信息
+
+        Args:
+            full_dataset: 完整数据集
+            train_indices: 训练集索引
+            val_indices: 验证集索引
+        """
+        if not full_dataset.has_labels:
+            logger.info(f"📊 Split: {len(train_indices)} train, {len(val_indices)} val (no labels)")
+            return
+
+        # 统计训练集类别分布
+        train_labels = [full_dataset.data_index.iloc[idx]["label"] for idx in train_indices]
+        train_class_counts = pd.Series(train_labels).value_counts().sort_index()
+
+        # 统计验证集类别分布
+        val_labels = [full_dataset.data_index.iloc[idx]["label"] for idx in val_indices]
+        val_class_counts = pd.Series(val_labels).value_counts().sort_index()
+
+        # 计算比例
+        train_ratio = train_class_counts[1] / len(train_labels) if len(train_labels) > 0 else 0
+        val_ratio = val_class_counts[1] / len(val_labels) if len(val_labels) > 0 else 0
+
+        logger.info("📊 Dataset split statistics:")
+        logger.info(f"   Training: {len(train_indices)} samples")
+        logger.info(f"     - Class 0 (Non-landslide): {train_class_counts.get(0, 0)} ({(1-train_ratio)*100:.1f}%)")
+        logger.info(f"     - Class 1 (Landslide): {train_class_counts.get(1, 0)} ({train_ratio*100:.1f}%)")
+        logger.info(f"   Validation: {len(val_indices)} samples")
+        logger.info(f"     - Class 0 (Non-landslide): {val_class_counts.get(0, 0)} ({(1-val_ratio)*100:.1f}%)")
+        logger.info(f"     - Class 1 (Landslide): {val_class_counts.get(1, 0)} ({val_ratio*100:.1f}%)")
+
+        # 检查分层效果
+        ratio_diff = abs(train_ratio - val_ratio)
+        if ratio_diff < 0.02:  # 2%以内认为是好的分层效果
+            logger.info(f"✅ Good stratification: ratio difference = {ratio_diff:.3f}")
+        else:
+            logger.warning(f"⚠️ Stratification may be imperfect: ratio difference = {ratio_diff:.3f}")
 
     def train_dataloader(self) -> DataLoader:
         """创建训练数据加载器"""
@@ -339,6 +492,91 @@ class MultiModalDataModule(pl.LightningDataModule):
         from .transforms import get_test_transforms
 
         return get_test_transforms(self.augmentation.get("test", {}))
+
+    # =============================================================================
+    # 🔧 主动学习支持方法
+    # =============================================================================
+
+    def add_samples_to_train_split(self, new_sample_ids: List[str], new_labels: Optional[List[int]] = None):
+        """
+        将新样本添加到训练分割中（用于主动学习）
+
+        Args:
+            new_sample_ids: 新样本ID列表
+            new_labels: 新样本标签列表（可选）
+        """
+        train_split_file = self.train_csv.parent / "train_split.csv"
+
+        if not train_split_file.exists():
+            logger.error("❌ train_split.csv does not exist. Please run initial training first.")
+            return
+
+        import pandas as pd
+
+        # 读取现有训练分割
+        train_df = pd.read_csv(train_split_file)
+
+        # 准备新样本数据
+        new_rows = []
+        for i, sample_id in enumerate(new_sample_ids):
+            new_row = {"ID": sample_id}
+            if new_labels is not None and i < len(new_labels):
+                new_row["label"] = new_labels[i]
+            else:
+                # 如果没有提供标签，尝试从原始数据中查找
+                original_df = pd.read_csv(self.train_csv)
+                if sample_id in original_df["ID"].values:
+                    original_row = original_df[original_df["ID"] == sample_id].iloc[0]
+                    new_row.update(original_row.to_dict())
+            new_rows.append(new_row)
+
+        # 添加新样本到训练集
+        new_train_df = pd.concat([train_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+        # 去重（防止重复添加）
+        new_train_df = new_train_df.drop_duplicates(subset=["ID"], keep="last")
+
+        # 保存更新后的训练分割
+        new_train_df.to_csv(train_split_file, index=False)
+
+        added_count = len(new_train_df) - len(train_df)
+        logger.info(f"✅ Added {added_count} new samples to training set")
+        logger.info(f"📈 Training set size: {len(train_df)} → {len(new_train_df)}")
+
+    def get_split_info(self) -> Dict[str, Any]:
+        """
+        获取当前数据分割信息
+
+        Returns:
+            Dict: 包含分割信息的字典
+        """
+        train_split_file = self.train_csv.parent / "train_split.csv"
+        val_split_file = self.train_csv.parent / "val_split.csv"
+
+        info = {
+            "train_split_exists": train_split_file.exists(),
+            "val_split_exists": val_split_file.exists(),
+            "train_split_file": str(train_split_file),
+            "val_split_file": str(val_split_file),
+        }
+
+        if train_split_file.exists():
+            import pandas as pd
+
+            train_df = pd.read_csv(train_split_file)
+            info["train_size"] = len(train_df)
+            if "label" in train_df.columns:
+                info["train_class_distribution"] = train_df["label"].value_counts().to_dict()
+
+        if val_split_file.exists():
+            import pandas as pd
+
+            val_df = pd.read_csv(val_split_file)
+            info["val_size"] = len(val_df)
+            if "label" in val_df.columns:
+                info["val_class_distribution"] = val_df["label"].value_counts().to_dict()
+
+        return info
 
 
 class DatasetSubset:
