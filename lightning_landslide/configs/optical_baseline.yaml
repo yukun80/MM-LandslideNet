@@ -7,7 +7,7 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "multimodal_swin_tiny_0801"
+experiment_name: "multimodal_swin_tiny_0803"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
 version: "2.0.0"
 
@@ -162,7 +162,7 @@ data:
 trainer:
   target: pytorch_lightning.Trainer
   params:
-    max_epochs: 100
+    max_epochs: 50
     accelerator: "gpu"         # 使用GPU
     devices: 1                 # 使用1个GPU
     precision: "32-true"       # 使用32位精度，不使用混合精度
@@ -217,7 +217,7 @@ callbacks:
   metrics_logger:
     target: lightning_landslide.src.utils.metrics.MetricsLogger
     params:
-      summary_interval: 5  # 每5个epoch打印详细总结
+      summary_interval: 10  # 每10个epoch打印详细总结
       save_history: true   # 保存完整历史
 
 # === 日志记录器配置（修复版）===

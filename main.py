@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import warnings
 from datetime import datetime
+import pandas as pd
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent
@@ -146,6 +147,8 @@ class ExperimentRunner:
                 results = self._run_sample_selection()
             elif self.task == "retrain":
                 results = self._run_retraining()
+            elif self.task == "predict":
+                results = self._run_prediction()
             else:
                 raise ValueError(f"Unknown task: {self.task}")
 
@@ -232,11 +235,20 @@ class ExperimentRunner:
                 └── logger.log_metrics()             # 记录指标
         """
 
-        # 在测试集上评估
-        test_results = trainer.test(model, datamodule, verbose=False)
+        logger.info("🏆 Training completed successfully!")
+        logger.info("📊 Model performance should be evaluated based on validation metrics only")
+        logger.info("🎯 Use the validation F1 score as the primary performance indicator")
+
+        # 从验证指标中提取最终性能
+        best_val_metrics = {}
+        if hasattr(trainer, "callback_metrics"):
+            for key, value in trainer.callback_metrics.items():
+                if "val_" in key:
+                    best_val_metrics[key] = float(value) if hasattr(value, "item") else value
 
         # 保存最终模型
-        final_model_path = Path(self.config.outputs.model_dir) / "final_model.ckpt"
+        final_model_path = Path(self.config.outputs.experiment_dir) / "checkpoints" / "final_model.ckpt"
+        final_model_path.parent.mkdir(parents=True, exist_ok=True)
         trainer.save_checkpoint(str(final_model_path))
 
         return {
@@ -244,7 +256,7 @@ class ExperimentRunner:
                 trainer.checkpoint_callback.best_model_path if hasattr(trainer, "checkpoint_callback") else None
             ),
             "final_model": str(final_model_path),
-            "test_results": test_results[0] if test_results else {},
+            "validation_metrics": best_val_metrics,  # 🔧 使用验证指标而不是测试指标
             "training_completed": True,
         }
 
@@ -288,6 +300,91 @@ class ExperimentRunner:
         return ActiveLearningStepManager.run_retraining(
             config=dict(self.config), state_path=state_path, annotation_file=annotation_file
         )
+
+    # =============================================================================
+    # 预测
+    # =============================================================================
+
+    def _run_prediction(self) -> Dict[str, Any]:
+        """运行预测（专门用于Kaggle提交）"""
+        logger.info("🔮 Running prediction for Kaggle submission...")
+
+        # 加载最佳模型
+        checkpoint_path = self.config.get("checkpoint_path")
+        if not checkpoint_path:
+            # 自动查找最佳检查点
+            exp_dir = Path(self.config.outputs.experiment_dir)
+            checkpoint_dir = exp_dir / "checkpoints"
+
+            # 查找最佳F1检查点
+            best_checkpoints = list(checkpoint_dir.glob("best-epoch=*-val_f1=*.ckpt"))
+            if best_checkpoints:
+                checkpoint_path = str(sorted(best_checkpoints)[-1])  # 取最新的
+            else:
+                raise FileNotFoundError("No trained model found. Please run training first.")
+
+        logger.info(f"📥 Loading model from: {checkpoint_path}")
+
+        # 实例化组件
+        model = instantiate_from_config(self.config.model)
+        datamodule = instantiate_from_config(self.config.data)
+        trainer = instantiate_from_config(self.config.trainer)
+
+        # 加载检查点
+        model = model.load_from_checkpoint(checkpoint_path)
+        model.eval()
+
+        # 设置数据（只需要测试集）
+        datamodule.setup("predict")
+
+        # 进行预测（不计算任何指标）
+        predictions = trainer.predict(model, datamodule.predict_dataloader())
+
+        # 处理预测结果
+        all_probs = []
+        all_preds = []
+
+        for batch_preds in predictions:
+            probs = batch_preds["probabilities"].cpu().numpy()
+            preds = batch_preds["predictions"].cpu().numpy()
+            all_probs.extend(probs)
+            all_preds.extend(preds)
+
+        # 获取测试样本ID
+        test_dataset = datamodule.test_dataset
+        sample_ids = [test_dataset.data_index.iloc[i]["ID"] for i in range(len(test_dataset))]
+
+        # 创建提交文件
+        submission_df = pd.DataFrame(
+            {"ID": sample_ids, "label": [int(pred) for pred in all_preds]}  # Kaggle通常要求整数标签
+        )
+
+        # 保存提交文件
+        submission_path = exp_dir / "kaggle_submission.csv"
+        submission_df.to_csv(submission_path, index=False)
+
+        # 保存详细预测结果（包含概率）
+        detailed_results = pd.DataFrame({"ID": sample_ids, "probability": all_probs, "prediction": all_preds})
+
+        detailed_path = exp_dir / "detailed_predictions.csv"
+        detailed_results.to_csv(detailed_path, index=False)
+
+        logger.info(f"✅ Prediction completed!")
+        logger.info(f"📄 Kaggle submission saved to: {submission_path}")
+        logger.info(f"📊 Detailed results saved to: {detailed_path}")
+        logger.info(f"🎯 Predicted {len(sample_ids)} samples")
+
+        # 预测统计
+        positive_ratio = sum(all_preds) / len(all_preds)
+        logger.info(f"📈 Positive prediction ratio: {positive_ratio:.3f}")
+
+        return {
+            "submission_path": str(submission_path),
+            "detailed_path": str(detailed_path),
+            "num_predictions": len(sample_ids),
+            "positive_ratio": positive_ratio,
+            "checkpoint_used": checkpoint_path,
+        }
 
     def _print_experiment_info(self):
         """打印实验信息"""

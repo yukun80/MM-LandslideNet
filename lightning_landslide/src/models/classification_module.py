@@ -370,9 +370,11 @@ class LandslideClassificationModule(pl.LightningModule):
         self.log("validation/val_auroc", self.val_auroc, on_step=False, on_epoch=True)
 
         # 🔧 兼容：保持原有命名用于ModelCheckpoint和EarlyStopping
-
         self.log("val_f1", self.val_f1, on_step=False, on_epoch=True)
         self.log("val_loss", loss, on_step=False, on_epoch=True)
+        # 🔧 修复：添加缺失的兼容性指标
+        self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
+        self.log("val_auroc", self.val_auroc, on_step=False, on_epoch=True)
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """

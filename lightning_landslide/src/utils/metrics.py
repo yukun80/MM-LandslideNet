@@ -137,7 +137,14 @@ class MetricsLogger(Callback):
                 "val_precision": ["val_precision"],
                 "val_recall": ["val_recall"],
                 "val_auroc": ["val_auroc"],
-                "learning_rate": ["lr", "learning_rate"],
+                "learning_rate": [
+                    "lr",
+                    "learning_rate",
+                    "lr-param_group_0",
+                    "lr-param_group_1",  # 参数组特定的键名
+                    "lr-AdamW-param_group_0",
+                    "lr-AdamW-param_group_1",  # 组合键名
+                ],
             }
 
             # 安全提取每个指标
@@ -289,9 +296,20 @@ class MetricsLogger(Callback):
 
             if best_f1 is not None:
                 logger.info(f"  🥇 Best F1 Score: {best_f1:.4f} at Epoch {best_epoch}")
-                logger.info(f"     ├─ Validation Accuracy: {self.best_metrics.get('best_val_acc', 'N/A'):.4f}")
-                logger.info(f"     ├─ Validation AUROC: {self.best_metrics.get('best_val_auroc', 'N/A'):.4f}")
-                logger.info(f"     └─ Validation Loss: {self.best_metrics.get('best_val_loss', 'N/A'):.4f}")
+
+                # 🔧 修复：安全处理None值的格式化
+                best_val_acc = self.best_metrics.get("best_val_acc")
+                best_val_auroc = self.best_metrics.get("best_val_auroc")
+                best_val_loss = self.best_metrics.get("best_val_loss")
+
+                # 安全格式化 - 只有当值不为None时才格式化
+                val_acc_str = f"{best_val_acc:.4f}" if best_val_acc is not None else "N/A"
+                val_auroc_str = f"{best_val_auroc:.4f}" if best_val_auroc is not None else "N/A"
+                val_loss_str = f"{best_val_loss:.4f}" if best_val_loss is not None else "N/A"
+
+                logger.info(f"     ├─ Validation Accuracy: {val_acc_str}")
+                logger.info(f"     ├─ Validation AUROC: {val_auroc_str}")
+                logger.info(f"     └─ Validation Loss: {val_loss_str}")
 
         logger.info(f"{'🎯'*50}\n")
 
