@@ -13,8 +13,6 @@ version: "2.0.0"
 
 # 研究人员信息
 author: "MM-LandslideNet Team"
-created_date: "2024-01-15"
-updated_date: "2024-08-01"
 notes: |
   This experiment serves as the optical baseline for our multi-modal landslide detection project.
   It uses only optical channels (R,G,B,NIR,NDVI) with a Swin Transformer Tiny backbone.
@@ -128,7 +126,7 @@ data:
         means: [1849.282, 1953.906, 1896.493, 3291.47, -9.624, -17.110, 
                 -0.699, -0.483, -10.671, -18.442, 0.248, -0.234]
         stds: [1414.462, 1338.292, 1342.528, 1448.362, 7.904, 9.245, 
-              4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
+               4.062, 4.283, 6.333, 8.691, 2.777, 3.932]
       
       # NDVI计算配置
       ndvi_computation:
@@ -162,7 +160,7 @@ data:
 trainer:
   target: pytorch_lightning.Trainer
   params:
-    max_epochs: 50
+    max_epochs: 100
     accelerator: "gpu"         # 使用GPU
     devices: 1                 # 使用1个GPU
     precision: "32-true"       # 使用32位精度，不使用混合精度
