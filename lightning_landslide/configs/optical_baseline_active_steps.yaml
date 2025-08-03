@@ -6,7 +6,7 @@
 # 前置条件：已完成基础训练并保存权重到 lightning_landslide/exp/optical_swin_tiny_0724/checkpoints/
 
 # === 实验元信息 ===
-experiment_name:  "multimodal_swin_tiny_0803"
+experiment_name:  "multimodal_swin_tiny_0804"
 description: "Stepwise active learning based on successful optical_swin_tiny_0724 baseline"
 version: "2.0.0"
 
@@ -160,7 +160,7 @@ data:
 active_pseudo_learning:
   # 基本参数
   max_iterations: 5                     # 最大迭代次数
-  annotation_budget: 100                 # 每轮标注预算
+  annotation_budget: 80                 # 每轮标注预算
   
   # 不确定性估计配置
   uncertainty_estimation:
@@ -174,10 +174,18 @@ active_pseudo_learning:
   pseudo_labeling:
     confidence_threshold: 0.85          # 伪标签置信度阈值
     uncertainty_threshold: 0.1          # 不确定性阈值
-    use_adaptive_threshold: false       # 是否使用自适应阈值
-    use_class_balance: true             # 是否考虑类别平衡
+    # 数量控制
+    max_pseudo_samples: 500             # 最大候选样本数
+    min_pseudo_per_class: 10            # 每个类别最少伪标签数
     
-    # 高级配置
+    # 策略控制
+    use_adaptive_threshold: false       # 是否使用自适应阈值
+    use_class_balance: true             # 是否应用类别平衡
+    
+    # 🔧 可选：指定伪标签文件路径（用于retrain步骤）
+    # pseudo_labels_file: "path/to/custom/pseudo_labels.json"  # 如果不指定，将自动寻找最新文件
+    
+    # 质量权重（未来扩展）
     quality_weights:
       confidence_weight: 0.6            # 置信度权重
       uncertainty_weight: 0.3           # 不确定性权重
@@ -185,7 +193,6 @@ active_pseudo_learning:
   
   # 主动学习选择策略
   active_learning:
-    budget_per_iteration: 100            # 每轮选择预算
     strategies:
       uncertainty: 0.6                  # 不确定性采样权重
       diversity: 0.3                    # 多样性采样权重
@@ -285,6 +292,8 @@ outputs:
   logs_dir: "${outputs.experiment_dir}/logs"
   predictions_dir: "${outputs.experiment_dir}/predictions"
   active_learning_dir: "${outputs.experiment_dir}/active_learning"  # 主动学习专用目录
+
+checkpoint_path: lightning_landslide/exp/multimodal_swin_tiny_0804/checkpoints/best-epoch=51-val_f1=0.8748.ckpt
 
 # 💾 保存设置配置（独立section）
 save_settings:

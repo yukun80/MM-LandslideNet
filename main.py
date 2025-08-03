@@ -143,6 +143,8 @@ class ExperimentRunner:
                 results = self._run_kfold_training()
             elif self.task == "uncertainty_estimation":
                 results = self._run_uncertainty_estimation()
+            elif self.task == "pseudo_labeling":  # 🏷️ 新增任务类型
+                results = self._run_pseudo_labeling()
             elif self.task == "sample_selection":
                 results = self._run_sample_selection()
             elif self.task == "retrain":
@@ -152,7 +154,6 @@ class ExperimentRunner:
             else:
                 raise ValueError(f"Unknown task: {self.task}")
 
-            # 计算运行时间
             end_time = datetime.now()
             results["execution_time"] = str(end_time - start_time)
             results["task"] = self.task
@@ -290,6 +291,13 @@ class ExperimentRunner:
         state_path = self.task_kwargs.get("state_path")
         return ActiveLearningStepManager.run_sample_selection(config=dict(self.config), state_path=state_path)
 
+    def _run_pseudo_labeling(self) -> Dict[str, Any]:
+        """运行伪标签生成（步骤3.5）"""
+        logger.info("🏷️ Running pseudo label generation step...")
+
+        state_path = self.task_kwargs.get("state_path")
+        return ActiveLearningStepManager.run_pseudo_labeling(config=dict(self.config), state_path=state_path)
+
     def _run_retraining(self) -> Dict[str, Any]:
         """运行模型重训练（步骤5）"""
         logger.info("🔄 Running model retraining step...")
@@ -325,14 +333,15 @@ class ExperimentRunner:
 
         logger.info(f"📥 Loading model from: {checkpoint_path}")
 
-        # 实例化组件
-        model = instantiate_from_config(self.config.model)
+        # 🔧 修复：直接从检查点加载模型（正确方式）
+        from lightning_landslide.src.models.classification_module import LandslideClassificationModule
+
+        model = LandslideClassificationModule.load_from_checkpoint(checkpoint_path)
+        model.eval()
+
+        # 实例化数据模块和训练器
         datamodule = instantiate_from_config(self.config.data)
         trainer = instantiate_from_config(self.config.trainer)
-
-        # 加载检查点
-        model = model.load_from_checkpoint(checkpoint_path)
-        model.eval()
 
         # 设置数据（只需要测试集）
         datamodule.setup("predict")
@@ -360,6 +369,7 @@ class ExperimentRunner:
         )
 
         # 保存提交文件
+        exp_dir = Path(self.config.outputs.experiment_dir)
         submission_path = exp_dir / "kaggle_submission.csv"
         submission_df.to_csv(submission_path, index=False)
 
@@ -429,45 +439,42 @@ Examples:
   # K折交叉验证
   python main.py kfold lightning_landslide/configs/optical_baseline_5-fold.yaml
   
-  # === 分步主动学习 ===
+  # === 分步主动学习 + 伪标签学习 ===
   # 步骤2：不确定性估计
   python main.py uncertainty_estimation lightning_landslide/configs/optical_baseline_active_steps.yaml
   
-  # 步骤3：样本选择
+  # 步骤3：伪标签生成（新增，可选）
+  python main.py pseudo_labeling lightning_landslide/configs/optical_baseline_active_steps.yaml
+  
+  # 步骤4：样本选择
   python main.py sample_selection lightning_landslide/configs/optical_baseline_active_steps.yaml
   
-  # 步骤5：模型重训练
+  # 步骤5：运行 lightning_landslide/src/active_learning/annotation_helper.py
+  
+  # 步骤6：模型重训练
   python main.py retrain lightning_landslide/configs/optical_baseline_active_steps.yaml \
---annotation_file lightning_landslide/exp/multimodal_swin_tiny_0803/active_learning/annotation_results_iter_0.json
+--annotation_file lightning_landslide/exp/multimodal_swin_tiny_0804/active_learning/annotation_results_iter_0.json
+
+# 预测和提交
+  python main.py predict lightning_landslide/configs/optical_baseline_active_steps.yaml
         """,
     )
 
     parser.add_argument(
         "task",
         choices=[
-            "train",  # 基础训练
-            "kfold",  # K折交叉验证
-            "uncertainty_estimation",  # 步骤2：不确定性估计
-            "sample_selection",  # 步骤3：样本选择
-            "retrain",  # 步骤5：模型重训练
+            "train",
+            "kfold",
+            "uncertainty_estimation",
+            "pseudo_labeling",
+            "sample_selection",
+            "retrain",  # 主动学习步骤
+            "predict",
         ],
         help="Task to execute",
     )
 
     parser.add_argument("config", type=str, help="Path to configuration file")
-
-    # 通用参数
-    parser.add_argument("--experiment_name", type=str, help="Override experiment name")
-    parser.add_argument("--checkpoint_path", type=str, help="Checkpoint path for prediction")
-
-    # K折特定参数
-    parser.add_argument("--n_splits", type=int, help="Number of folds for K-fold CV")
-
-    # 主动学习特定参数
-    parser.add_argument("--max_iterations", type=int, help="Maximum active learning iterations")
-    parser.add_argument("--annotation_budget", type=int, help="Annotation budget per iteration")
-
-    # 分步主动学习参数
     parser.add_argument("--state_path", type=str, help="Path to active learning state file")
     parser.add_argument("--annotation_file", type=str, help="Path to annotation results file")
 

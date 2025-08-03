@@ -1,0 +1,43 @@
+# === 分离式主动学习+伪标签配置 ===
+active_pseudo_learning:
+  # 基本参数
+  max_iterations: 5
+  annotation_budget: 100
+  
+  # 不确定性估计配置
+  uncertainty_estimation:
+    method: "mc_dropout"
+    params:
+      n_forward_passes: 5
+      use_temperature_scaling: false
+      dropout_rate: 0.2
+  
+  # 🏷️ 伪标签生成配置（独立步骤）
+  pseudo_labeling:
+    # 基础阈值
+    confidence_threshold: 0.85          # 预测置信度阈值
+    uncertainty_threshold: 0.1          # 不确定性阈值（低于此值的样本才考虑）
+    
+    # 数量控制
+    max_pseudo_samples: 500             # 最大候选样本数
+    min_pseudo_per_class: 10            # 每个类别最少伪标签数
+    
+    # 策略控制
+    use_class_balance: true             # 是否应用类别平衡
+    
+    # 🔧 可选：指定伪标签文件路径（用于retrain步骤）
+    # pseudo_labels_file: "path/to/custom/pseudo_labels.json"  # 如果不指定，将自动寻找最新文件
+    
+    # 质量权重（未来扩展）
+    quality_weights:
+      confidence_weight: 0.6            # 置信度权重
+      uncertainty_weight: 0.3           # 不确定性权重
+      consistency_weight: 0.1           # 一致性权重
+  
+  # 主动学习选择策略
+  active_learning:
+    budget_per_iteration: 100
+    strategies:
+      uncertainty: 0.6
+      diversity: 0.3
+      cluster_based: 0.1

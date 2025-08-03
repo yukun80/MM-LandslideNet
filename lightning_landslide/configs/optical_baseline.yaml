@@ -7,7 +7,7 @@
 
 # === 实验元信息 ===
 # 每个实验都应该有清晰的身份和目标
-experiment_name: "multimodal_swin_tiny_0803"
+experiment_name: "multimodal_swin_tiny_0804"
 description: "Optical baseline using Swin Transformer Tiny for landslide detection"
 version: "2.0.0"
 
