@@ -134,9 +134,14 @@ class BaseActiveStep(ABC):
         checkpoint_dir = exp_dir / "checkpoints"
 
         if checkpoint_dir.exists():
-            # 寻找best开头的检查点文件
-            best_ckpts = list(checkpoint_dir.glob("baseline_epoch*.ckpt"))
+            # 🔧 修复：正确的检查点搜索模式
+            # 尝试多种常见的检查点命名模式
+            patterns = "best-*.ckpt"  # 通用best模式
+
+            best_ckpts = list(checkpoint_dir.glob(patterns))
             if best_ckpts:
+                logger.info(f"Found {len(best_ckpts)} checkpoints with pattern: {patterns}")
+
                 # 选择最新的文件
                 latest_ckpt = max(best_ckpts, key=lambda x: x.stat().st_mtime)
                 logger.info(f"Found checkpoint: {latest_ckpt}")
@@ -202,15 +207,26 @@ class UncertaintyEstimator(BaseActiveStep):
         }
 
     def _load_model(self) -> pl.LightningModule:
-        """加载模型"""
+        """加载模型 - GPU优化版本"""
         logger.info(f"📥 Loading model from: {self.state.checkpoint_path}")
 
         # 重用现有的模型实例化逻辑
         model = instantiate_from_config(self.config["model"])
 
-        # 加载检查点
-        checkpoint = torch.load(self.state.checkpoint_path, map_location="cpu")
+        # 🔧 修复1：检查GPU可用性并设置正确的设备
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"🎯 Using device: {device}")
+
+        # 🔧 修复2：根据设备类型加载检查点
+        if device == "cuda":
+            checkpoint = torch.load(self.state.checkpoint_path, map_location="cuda")
+        else:
+            checkpoint = torch.load(self.state.checkpoint_path, map_location="cpu")
+
         model.load_state_dict(checkpoint["state_dict"])
+
+        # 🔧 修复3：明确移动模型到GPU
+        model = model.to(device)
         model.eval()
 
         # 设置dropout为训练模式（用于MC Dropout）
@@ -240,6 +256,9 @@ class UncertaintyEstimator(BaseActiveStep):
         logger.info(f"🔄 Running {self.method} with {self.n_forward_passes} forward passes...")
         logger.info("🔍 FIXED VERSION: Using real sample IDs from dataset")
 
+        # 🔧 修复1：确保设备正确
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
         model.eval()
         device = next(model.parameters()).device
         test_loader = datamodule.test_dataloader()
@@ -625,29 +644,131 @@ class ActiveRetrainer(BaseActiveStep):
         return pseudo_labels
 
     def _update_training_data(self, annotations: List[Dict], pseudo_labels: List[Dict]):
-        """更新训练数据 - 优雅的跨目录访问实现"""
+        """
+        更新训练数据 - 正确版本，确保无数据泄露
+
+        核心原则：
+        1. 原验证集样本绝对不能进入训练集（数据泄露）
+        2. 原训练集样本保持在训练集中
+        3. 新标注样本可以按策略分配到训练集和验证集
+        """
         logger.info("📊 Updating training data...")
 
-        # 1. 创建增强的训练CSV文件
-        enhanced_csv_path = self._create_enhanced_training_csv(annotations, pseudo_labels)
+        # 1. 读取原始分割文件（从dataset目录）
 
-        # 2. 创建数据路径映射文件
-        mapping_file = self._create_data_path_mapping(annotations, pseudo_labels)
+        original_train_split = Path("dataset/train_split.csv")
+        original_val_split = Path("dataset/val_split.csv")
 
-        # 3. 使用增强的配置创建数据模块
-        enhanced_config = self.config["data"].copy()
-        enhanced_config["params"]["train_csv"] = str(enhanced_csv_path)
-        # 🔧 关键：添加路径映射配置
-        enhanced_config["params"]["cross_directory_mapping"] = str(mapping_file)
+        if not original_train_split.exists() or not original_val_split.exists():
+            raise FileNotFoundError(
+                f"❌ Original split files not found! " f"Expected: {original_train_split} and {original_val_split}"
+            )
 
-        # 创建使用新数据的数据模块
-        datamodule = instantiate_from_config(enhanced_config)
+        # 2. 加载原始分割
+        original_train_df = pd.read_csv(original_train_split)
+        original_val_df = pd.read_csv(original_val_split)
+
+        logger.info(f"📂 Original train split: {len(original_train_df)} samples")
+        logger.info(f"📂 Original val split: {len(original_val_df)} samples")
+
+        # 4. 合并新样本（标注 + 伪标签）
+        new_samples = []
+
+        # 添加人工标注样本
+        for ann in annotations:
+            new_samples.append({"sample_id": ann["sample_id"], "label": ann["label"], "source": "annotation"})
+
+        # 添加伪标签样本
+        for pseudo in pseudo_labels:
+            new_samples.append({"sample_id": pseudo["sample_id"], "label": pseudo["label"], "source": "pseudo_label"})
 
         logger.info(
-            f"📊 Training data updated with {len(annotations)} annotations and {len(pseudo_labels)} pseudo labels"
+            f"📝 Processing {len(new_samples)} new samples ({len(annotations)} annotations + {len(pseudo_labels)} pseudo labels)"
         )
-        logger.info(f"📄 Enhanced training CSV: {enhanced_csv_path}")
-        logger.info(f"📁 Cross-directory mapping: {mapping_file}")
+
+        # 5. 分配新样本到训练集和验证集
+        # 策略：按80/20比例分配新样本（可以调整）
+        np.random.seed(self.config.get("seed", 3407))  # 确保可重现
+        new_sample_indices = np.random.permutation(len(new_samples))
+
+        # 计算分配数量
+        val_ratio = 0.2  # 20%新样本进入验证集
+        n_new_val = int(len(new_samples) * val_ratio)
+        n_new_train = len(new_samples) - n_new_val
+
+        new_val_indices = new_sample_indices[:n_new_val]
+        new_train_indices = new_sample_indices[n_new_val:]
+
+        logger.info(f"📊 New sample allocation: {n_new_train} → train, {n_new_val} → val")
+
+        # 6. 构建增强的训练集和验证集
+        enhanced_train_rows = []
+        enhanced_val_rows = []
+
+        # 保留所有原始训练样本
+        for _, row in original_train_df.iterrows():
+            enhanced_train_rows.append(row.to_dict())
+
+        # 保留所有原始验证样本
+        for _, row in original_val_df.iterrows():
+            enhanced_val_rows.append(row.to_dict())
+
+        # 添加新样本到训练集
+        for idx in new_train_indices:
+            sample = new_samples[idx]
+            enhanced_train_rows.append({"ID": sample["sample_id"], "label": sample["label"]})
+
+        # 添加新样本到验证集
+        for idx in new_val_indices:
+            sample = new_samples[idx]
+            enhanced_val_rows.append({"ID": sample["sample_id"], "label": sample["label"]})
+
+        # 7. 创建DataFrames
+        enhanced_train_df = pd.DataFrame(enhanced_train_rows)
+        enhanced_val_df = pd.DataFrame(enhanced_val_rows)
+
+        # 8. 🔧 关键修复：创建包含所有数据的完整CSV文件
+        all_enhanced_data = []
+        all_enhanced_data.extend(enhanced_train_rows)
+        all_enhanced_data.extend(enhanced_val_rows)
+        all_enhanced_df = pd.DataFrame(all_enhanced_data)
+
+        # 去重（防止重复）
+        all_enhanced_df = all_enhanced_df.drop_duplicates(subset=["ID"], keep="first")
+
+        # 10. 保存文件到active_learning目录
+        # 🔧 关键修复：保存完整数据集作为训练CSV
+        complete_enhanced_csv = self.active_dir / f"complete_enhanced_iter_{self.state.iteration}.csv"
+        all_enhanced_df.to_csv(complete_enhanced_csv, index=False)
+
+        # 保存分割文件
+        active_train_split = self.active_dir / "train_split.csv"
+        active_val_split = self.active_dir / "val_split.csv"
+
+        enhanced_train_df.to_csv(active_train_split, index=False)
+        enhanced_val_df.to_csv(active_val_split, index=False)
+
+        # 11. 创建数据路径映射文件
+        mapping_file = self._create_data_path_mapping(annotations, pseudo_labels)
+
+        # 12. 🔧 关键修复：使用完整数据集CSV作为train_csv
+        enhanced_config = self.config["data"].copy()
+        enhanced_config["params"]["train_csv"] = str(complete_enhanced_csv)  # 完整数据集
+        enhanced_config["params"]["cross_directory_mapping"] = str(mapping_file)
+
+        # 创建数据模块
+        datamodule = instantiate_from_config(enhanced_config)
+
+        # 13. 统计信息
+        logger.info(f"📊 Enhanced dataset statistics:")
+        logger.info(f"  - Original train: {len(original_train_df)} samples")
+        logger.info(f"  - Original val: {len(original_val_df)} samples")
+        logger.info(f"  - New samples: {len(new_samples)} samples")
+        logger.info(f"    └─ Added to train: {n_new_train} samples")
+        logger.info(f"    └─ Added to val: {n_new_val} samples")
+        logger.info(f"  - Enhanced train: {len(enhanced_train_df)} samples (+{n_new_train})")
+        logger.info(f"  - Enhanced val: {len(enhanced_val_df)} samples (+{n_new_val})")
+        logger.info(f"  - Complete dataset: {len(all_enhanced_df)} samples")
 
         return datamodule
 

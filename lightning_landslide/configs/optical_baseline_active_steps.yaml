@@ -160,13 +160,13 @@ data:
 active_pseudo_learning:
   # 基本参数
   max_iterations: 5                     # 最大迭代次数
-  annotation_budget: 50                 # 每轮标注预算
+  annotation_budget: 100                 # 每轮标注预算
   
   # 不确定性估计配置
   uncertainty_estimation:
     method: "mc_dropout"                # 方法：mc_dropout
     params:
-      n_forward_passes: 5              # MC Dropout前向传播次数
+      n_forward_passes: 5               # MC Dropout前向传播次数
       use_temperature_scaling: false    # 是否使用温度缩放
       dropout_rate: 0.2                 # 与模型配置中的dropout_rate一致
   
@@ -185,7 +185,7 @@ active_pseudo_learning:
   
   # 主动学习选择策略
   active_learning:
-    budget_per_iteration: 50            # 每轮选择预算
+    budget_per_iteration: 100            # 每轮选择预算
     strategies:
       uncertainty: 0.6                  # 不确定性采样权重
       diversity: 0.3                    # 多样性采样权重
@@ -285,8 +285,9 @@ outputs:
   logs_dir: "${outputs.experiment_dir}/logs"
   predictions_dir: "${outputs.experiment_dir}/predictions"
   active_learning_dir: "${outputs.experiment_dir}/active_learning"  # 主动学习专用目录
-  
-  # 主动学习保存设置
+
+# 💾 保存设置配置（独立section）
+save_settings:
   save_config: true
   save_predictions: true
   save_model_summary: true

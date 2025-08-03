@@ -81,12 +81,12 @@ class LandslideAnnotationTool:
         self.selected_font = configure_chinese_matplotlib()
 
         self.annotation_request_file = (
-            "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/active_learning/annotation_request_iter_0.json"
+            "lightning_landslide/exp/multimodal_swin_tiny_0803/active_learning/annotation_request_iter_0.json"
         )
 
-        self.output_file = f"lightning_landslide/exp/optical_swin_tiny_0731_active_steps/active_learning/annotation_results_iter_{iteration}.json"
+        self.output_file = f"lightning_landslide/exp/multimodal_swin_tiny_0803/active_learning/annotation_results_iter_{iteration}.json"
         self.output_file_generic = (
-            "lightning_landslide/exp/optical_swin_tiny_0731_active_steps/active_learning/annotation_results.json"
+            "lightning_landslide/exp/multimodal_swin_tiny_0803/active_learning/annotation_results.json"
         )
         self.image_dir = Path("dataset/datavision/test_data")
 
